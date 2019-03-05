@@ -3736,11 +3736,14 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
     d3d_info->texture_npot_conditional = gl_info->supported[WINED3D_GL_NORMALIZED_TEXRECT]
             || gl_info->supported[ARB_TEXTURE_RECTANGLE];
 
-    TRACE("Max texture stages: %u.\n", d3d_info->limits.ffp_blend_stages);
+    d3d_info->draw_base_vertex_offset = !!gl_info->supported[ARB_DRAW_ELEMENTS_BASE_VERTEX];
 
-    d3d_info->valid_rt_mask = 0;
-    for (i = 0; i < gl_info->limits.buffers; ++i)
-        d3d_info->valid_rt_mask |= (1u << i);
+    if (gl_info->supported[ARB_TEXTURE_MULTISAMPLE])
+        d3d_info->multisample_draw_location = WINED3D_LOCATION_TEXTURE_RGB;
+    else
+        d3d_info->multisample_draw_location = WINED3D_LOCATION_RB_MULTISAMPLE;
+
+    TRACE("Max texture stages: %u.\n", d3d_info->limits.ffp_blend_stages);
 
     if (!d3d_info->shader_color_key)
     {

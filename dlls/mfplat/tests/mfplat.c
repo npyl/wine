@@ -36,6 +36,8 @@
 
 #include "wine/test.h"
 
+static BOOL is_win8_plus;
+
 static HRESULT (WINAPI *pMFCopyImage)(BYTE *dest, LONG deststride, const BYTE *src, LONG srcstride,
         DWORD width, DWORD lines);
 static HRESULT (WINAPI *pMFCreateSourceResolver)(IMFSourceResolver **resolver);
@@ -45,6 +47,8 @@ static void*   (WINAPI *pMFHeapAlloc)(SIZE_T size, ULONG flags, char *file, int 
 static void    (WINAPI *pMFHeapFree)(void *p);
 static HRESULT (WINAPI *pMFPutWaitingWorkItem)(HANDLE event, LONG priority, IMFAsyncResult *result, MFWORKITEM_KEY *key);
 static HRESULT (WINAPI *pMFAllocateSerialWorkQueue)(DWORD queue, DWORD *serial_queue);
+static HRESULT (WINAPI *pMFAddPeriodicCallback)(MFPERIODICCALLBACK callback, IUnknown *context, DWORD *key);
+static HRESULT (WINAPI *pMFRemovePeriodicCallback)(DWORD key);
 
 DEFINE_GUID(GUID_NULL,0,0,0,0,0,0,0,0,0,0,0);
 
@@ -314,6 +318,7 @@ static void init_functions(void)
     HMODULE mod = GetModuleHandleA("mfplat.dll");
 
 #define X(f) p##f = (void*)GetProcAddress(mod, #f)
+    X(MFAddPeriodicCallback);
     X(MFAllocateSerialWorkQueue);
     X(MFCopyImage);
     X(MFCreateSourceResolver);
@@ -322,7 +327,10 @@ static void init_functions(void)
     X(MFHeapAlloc);
     X(MFHeapFree);
     X(MFPutWaitingWorkItem);
+    X(MFRemovePeriodicCallback);
 #undef X
+
+    is_win8_plus = pMFPutWaitingWorkItem != NULL;
 }
 
 static void test_MFCreateMediaType(void)
@@ -696,6 +704,17 @@ static void test_MFSample(void)
     IMFSample_Release(sample);
 }
 
+struct test_callback
+{
+    IMFAsyncCallback IMFAsyncCallback_iface;
+    HANDLE event;
+};
+
+static struct test_callback *impl_from_IMFAsyncCallback(IMFAsyncCallback *iface)
+{
+    return CONTAINING_RECORD(iface, struct test_callback, IMFAsyncCallback_iface);
+}
+
 static HRESULT WINAPI testcallback_QueryInterface(IMFAsyncCallback *iface, REFIID riid, void **obj)
 {
     if (IsEqualIID(riid, &IID_IMFAsyncCallback) ||
@@ -728,7 +747,43 @@ static HRESULT WINAPI testcallback_GetParameters(IMFAsyncCallback *iface, DWORD 
 
 static HRESULT WINAPI testcallback_Invoke(IMFAsyncCallback *iface, IMFAsyncResult *result)
 {
+    struct test_callback *callback = impl_from_IMFAsyncCallback(iface);
+    IMFMediaEventQueue *queue;
+    IUnknown *state, *obj;
+    HRESULT hr;
+
     ok(result != NULL, "Unexpected result object.\n");
+
+    state = IMFAsyncResult_GetStateNoAddRef(result);
+    if (state && SUCCEEDED(IUnknown_QueryInterface(state, &IID_IMFMediaEventQueue, (void **)&queue)))
+    {
+        IMFMediaEvent *event;
+
+        if (is_win8_plus)
+        {
+            hr = IMFMediaEventQueue_GetEvent(queue, MF_EVENT_FLAG_NO_WAIT, &event);
+            ok(hr == MF_E_MULTIPLE_SUBSCRIBERS, "Failed to get event, hr %#x.\n", hr);
+
+            hr = IMFMediaEventQueue_GetEvent(queue, 0, &event);
+            ok(hr == MF_E_MULTIPLE_SUBSCRIBERS, "Failed to get event, hr %#x.\n", hr);
+        }
+
+        hr = IMFMediaEventQueue_EndGetEvent(queue, result, &event);
+        ok(hr == S_OK, "Failed to finalize GetEvent, hr %#x.\n", hr);
+
+        hr = IMFAsyncResult_GetObject(result, &obj);
+        ok(hr == E_POINTER, "Unexpected hr %#x.\n", hr);
+
+        IMFMediaEvent_Release(event);
+
+        hr = IMFMediaEventQueue_EndGetEvent(queue, result, &event);
+        ok(hr == E_FAIL, "Unexpected result, hr %#x.\n", hr);
+
+        IMFMediaEventQueue_Release(queue);
+
+        SetEvent(callback->event);
+    }
+
     return E_NOTIMPL;
 }
 
@@ -741,14 +796,22 @@ static const IMFAsyncCallbackVtbl testcallbackvtbl =
     testcallback_Invoke,
 };
 
+static void init_test_callback(struct test_callback *callback)
+{
+    callback->IMFAsyncCallback_iface.lpVtbl = &testcallbackvtbl;
+    callback->event = NULL;
+}
+
 static void test_MFCreateAsyncResult(void)
 {
-    IMFAsyncCallback callback = { &testcallbackvtbl };
     IMFAsyncResult *result, *result2;
+    struct test_callback callback;
     IUnknown *state, *object;
     MFASYNCRESULT *data;
     ULONG refcount;
     HRESULT hr;
+
+    init_test_callback(&callback);
 
     hr = MFCreateAsyncResult(NULL, NULL, NULL, NULL);
     ok(FAILED(hr), "Unexpected hr %#x.\n", hr);
@@ -793,11 +856,11 @@ static void test_MFCreateAsyncResult(void)
     ok(state == NULL, "Unexpected state.\n");
 
     /* Object. */
-    hr = MFCreateAsyncResult((IUnknown *)result, &callback, NULL, &result2);
+    hr = MFCreateAsyncResult((IUnknown *)result, &callback.IMFAsyncCallback_iface, NULL, &result2);
     ok(hr == S_OK, "Failed to create object, hr %#x.\n", hr);
 
     data = (MFASYNCRESULT *)result2;
-    ok(data->pCallback == &callback, "Unexpected callback value.\n");
+    ok(data->pCallback == &callback.IMFAsyncCallback_iface, "Unexpected callback value.\n");
     ok(data->hrStatusResult == S_OK, "Unexpected status %#x.\n", data->hrStatusResult);
     ok(data->dwBytesTransferred == 0, "Unexpected byte length %u.\n", data->dwBytesTransferred);
     ok(data->hEvent == NULL, "Unexpected event.\n");
@@ -811,11 +874,11 @@ static void test_MFCreateAsyncResult(void)
     IMFAsyncResult_Release(result2);
 
     /* State object. */
-    hr = MFCreateAsyncResult(NULL, &callback, (IUnknown *)result, &result2);
+    hr = MFCreateAsyncResult(NULL, &callback.IMFAsyncCallback_iface, (IUnknown *)result, &result2);
     ok(hr == S_OK, "Failed to create object, hr %#x.\n", hr);
 
     data = (MFASYNCRESULT *)result2;
-    ok(data->pCallback == &callback, "Unexpected callback value.\n");
+    ok(data->pCallback == &callback.IMFAsyncCallback_iface, "Unexpected callback value.\n");
     ok(data->hrStatusResult == S_OK, "Unexpected status %#x.\n", data->hrStatusResult);
     ok(data->dwBytesTransferred == 0, "Unexpected byte length %u.\n", data->dwBytesTransferred);
     ok(data->hEvent == NULL, "Unexpected event.\n");
@@ -1092,15 +1155,17 @@ static void test_MFHeapAlloc(void)
 
 static void test_scheduled_items(void)
 {
-    IMFAsyncCallback callback = { &testcallbackvtbl };
+    struct test_callback callback;
     IMFAsyncResult *result;
     MFWORKITEM_KEY key, key2;
     HRESULT hr;
 
+    init_test_callback(&callback);
+
     hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
     ok(hr == S_OK, "Failed to start up, hr %#x.\n", hr);
 
-    hr = MFScheduleWorkItem(&callback, NULL, -5000, &key);
+    hr = MFScheduleWorkItem(&callback.IMFAsyncCallback_iface, NULL, -5000, &key);
     ok(hr == S_OK, "Failed to schedule item, hr %#x.\n", hr);
 
     hr = MFCancelWorkItem(key);
@@ -1115,7 +1180,7 @@ static void test_scheduled_items(void)
         return;
     }
 
-    hr = MFCreateAsyncResult(NULL, &callback, NULL, &result);
+    hr = MFCreateAsyncResult(NULL, &callback.IMFAsyncCallback_iface, NULL, &result);
     ok(hr == S_OK, "Failed to create result, hr %#x.\n", hr);
 
     hr = pMFPutWaitingWorkItem(NULL, 0, result, &key);
@@ -1132,7 +1197,7 @@ static void test_scheduled_items(void)
 
     IMFAsyncResult_Release(result);
 
-    hr = MFScheduleWorkItem(&callback, NULL, -5000, &key);
+    hr = MFScheduleWorkItem(&callback.IMFAsyncCallback_iface, NULL, -5000, &key);
     ok(hr == S_OK, "Failed to schedule item, hr %#x.\n", hr);
 
     hr = MFCancelWorkItem(key);
@@ -1199,6 +1264,171 @@ static void test_serial_queue(void)
     ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
 }
 
+static LONG periodic_counter;
+static void CALLBACK periodic_callback(IUnknown *context)
+{
+    InterlockedIncrement(&periodic_counter);
+}
+
+static void test_periodic_callback(void)
+{
+    DWORD period, key;
+    HRESULT hr;
+
+    hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+    ok(hr == S_OK, "Failed to start up, hr %#x.\n", hr);
+
+    period = 0;
+    hr = MFGetTimerPeriodicity(&period);
+    ok(hr == S_OK, "Failed to get timer perdiod, hr %#x.\n", hr);
+    ok(period == 10, "Unexpected period %u.\n", period);
+
+    if (!pMFAddPeriodicCallback)
+    {
+        win_skip("Periodic callbacks are not supported.\n");
+        MFShutdown();
+        return;
+    }
+
+    ok(periodic_counter == 0, "Unexpected counter value %u.\n", periodic_counter);
+
+    hr = pMFAddPeriodicCallback(periodic_callback, NULL, &key);
+    ok(hr == S_OK, "Failed to add periodic callback, hr %#x.\n", hr);
+    ok(key != 0, "Unexpected key %#x.\n", key);
+
+    Sleep(10 * period);
+
+    hr = pMFRemovePeriodicCallback(key);
+    ok(hr == S_OK, "Failed to remove callback, hr %#x.\n", hr);
+
+    ok(periodic_counter > 0, "Unexpected counter value %u.\n", periodic_counter);
+
+    hr = MFShutdown();
+    ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
+}
+
+static void test_event_queue(void)
+{
+    struct test_callback callback, callback2;
+    IMFMediaEvent *event, *event2;
+    IMFMediaEventQueue *queue;
+    IMFAsyncResult *result;
+    HRESULT hr;
+    DWORD ret;
+
+    init_test_callback(&callback);
+    init_test_callback(&callback2);
+
+    hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+    ok(hr == S_OK, "Failed to start up, hr %#x.\n", hr);
+
+    hr = MFCreateEventQueue(&queue);
+    ok(hr == S_OK, "Failed to create event queue, hr %#x.\n", hr);
+
+    hr = IMFMediaEventQueue_GetEvent(queue, MF_EVENT_FLAG_NO_WAIT, &event);
+    ok(hr == MF_E_NO_EVENTS_AVAILABLE, "Unexpected hr %#x.\n", hr);
+
+    hr = MFCreateMediaEvent(MEError, &GUID_NULL, E_FAIL, NULL, &event);
+    ok(hr == S_OK, "Failed to create event object, hr %#x.\n", hr);
+
+    if (is_win8_plus)
+    {
+        hr = IMFMediaEventQueue_QueueEvent(queue, event);
+        ok(hr == S_OK, "Failed to queue event, hr %#x.\n", hr);
+
+        hr = IMFMediaEventQueue_GetEvent(queue, MF_EVENT_FLAG_NO_WAIT, &event2);
+        ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+        ok(event2 == event, "Unexpected event object.\n");
+        IMFMediaEvent_Release(event2);
+
+        hr = IMFMediaEventQueue_QueueEvent(queue, event);
+        ok(hr == S_OK, "Failed to queue event, hr %#x.\n", hr);
+
+        hr = IMFMediaEventQueue_GetEvent(queue, 0, &event2);
+        ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+        IMFMediaEvent_Release(event2);
+    }
+
+    /* Async case. */
+    hr = IMFMediaEventQueue_BeginGetEvent(queue, NULL, NULL);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFMediaEventQueue_BeginGetEvent(queue, &callback.IMFAsyncCallback_iface, (IUnknown *)queue);
+    ok(hr == S_OK, "Failed to Begin*, hr %#x.\n", hr);
+
+    /* Same callback, same state. */
+    hr = IMFMediaEventQueue_BeginGetEvent(queue, &callback.IMFAsyncCallback_iface, (IUnknown *)queue);
+    ok(hr == MF_S_MULTIPLE_BEGIN, "Unexpected hr %#x.\n", hr);
+
+    /* Same callback, different state. */
+    hr = IMFMediaEventQueue_BeginGetEvent(queue, &callback.IMFAsyncCallback_iface, (IUnknown *)&callback);
+    ok(hr == MF_E_MULTIPLE_BEGIN, "Unexpected hr %#x.\n", hr);
+
+    /* Different callback, same state. */
+    hr = IMFMediaEventQueue_BeginGetEvent(queue, &callback2.IMFAsyncCallback_iface, (IUnknown *)queue);
+    ok(hr == MF_E_MULTIPLE_SUBSCRIBERS, "Unexpected hr %#x.\n", hr);
+
+    /* Different callback, different state. */
+    hr = IMFMediaEventQueue_BeginGetEvent(queue, &callback2.IMFAsyncCallback_iface, (IUnknown *)&callback.IMFAsyncCallback_iface);
+    ok(hr == MF_E_MULTIPLE_SUBSCRIBERS, "Unexpected hr %#x.\n", hr);
+
+    callback.event = CreateEventA(NULL, FALSE, FALSE, NULL);
+
+    hr = IMFMediaEventQueue_QueueEvent(queue, event);
+    ok(hr == S_OK, "Failed to queue event, hr %#x.\n", hr);
+
+    ret = WaitForSingleObject(callback.event, 100);
+    ok(ret == WAIT_OBJECT_0, "Unexpected return value %#x.\n", ret);
+
+    CloseHandle(callback.event);
+
+    IMFMediaEvent_Release(event);
+
+    hr = MFCreateAsyncResult(NULL, &callback.IMFAsyncCallback_iface, NULL, &result);
+    ok(hr == S_OK, "Failed to create result, hr %#x.\n", hr);
+
+    hr = IMFMediaEventQueue_EndGetEvent(queue, result, &event);
+    ok(hr == E_FAIL, "Unexpected hr %#x.\n", hr);
+
+    /* Shutdown behavior. */
+    hr = IMFMediaEventQueue_Shutdown(queue);
+    ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
+
+    hr = IMFMediaEventQueue_GetEvent(queue, MF_EVENT_FLAG_NO_WAIT, &event);
+    ok(hr == MF_E_SHUTDOWN, "Unexpected hr %#x.\n", hr);
+
+    hr = MFCreateMediaEvent(MEError, &GUID_NULL, E_FAIL, NULL, &event);
+    ok(hr == S_OK, "Failed to create event object, hr %#x.\n", hr);
+    hr = IMFMediaEventQueue_QueueEvent(queue, event);
+    ok(hr == MF_E_SHUTDOWN, "Unexpected hr %#x.\n", hr);
+    IMFMediaEvent_Release(event);
+
+    hr = IMFMediaEventQueue_QueueEventParamUnk(queue, MEError, &GUID_NULL, E_FAIL, NULL);
+    ok(hr == MF_E_SHUTDOWN, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFMediaEventQueue_QueueEventParamVar(queue, MEError, &GUID_NULL, E_FAIL, NULL);
+    ok(hr == MF_E_SHUTDOWN, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFMediaEventQueue_BeginGetEvent(queue, &callback.IMFAsyncCallback_iface, NULL);
+    ok(hr == MF_E_SHUTDOWN, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFMediaEventQueue_BeginGetEvent(queue, NULL, NULL);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFMediaEventQueue_EndGetEvent(queue, result, &event);
+    ok(hr == MF_E_SHUTDOWN, "Unexpected hr %#x.\n", hr);
+    IMFAsyncResult_Release(result);
+
+    /* Already shut down. */
+    hr = IMFMediaEventQueue_Shutdown(queue);
+    ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
+
+    IMFMediaEventQueue_Release(queue);
+
+    hr = MFShutdown();
+    ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
+}
+
 START_TEST(mfplat)
 {
     CoInitialize(NULL);
@@ -1222,6 +1452,8 @@ START_TEST(mfplat)
     test_MFHeapAlloc();
     test_scheduled_items();
     test_serial_queue();
+    test_periodic_callback();
+    test_event_queue();
 
     CoUninitialize();
 }
