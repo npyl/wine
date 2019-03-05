@@ -5,7 +5,7 @@ osx_image: xcode10.1
 before_script:
   - |
     mkdir build && cd build
-    ../configure --without-freetype
+    ../configure --without-freetype --enable-win64
       
 script:
   - make -j20
