@@ -8,4 +8,4 @@ before_script:
     ../configure --without-freetype --enable-win64
       
 script:
-  - make -j20
+  - make -j20 --quiet
