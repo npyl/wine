@@ -1,0 +1,11 @@
+---
+language: cpp
+osx_image: xcode10.1
+
+before_script:
+  - |
+    mkdir build && cd build
+    ../configure --without-freetype
+      
+script:
+  - make -j20
