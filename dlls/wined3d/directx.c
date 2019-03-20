@@ -1211,7 +1211,9 @@ HRESULT CDECL wined3d_get_adapter_identifier(const struct wined3d *wined3d,
     identifier->device_id = adapter->driver_info.device;
     identifier->subsystem_id = 0;
     identifier->revision = 0;
-    memcpy(&identifier->device_identifier, &IID_D3DDEVICE_D3DUID, sizeof(identifier->device_identifier));
+    identifier->device_identifier = IID_D3DDEVICE_D3DUID;
+    identifier->driver_uuid = adapter->driver_uuid;
+    identifier->device_uuid = adapter->device_uuid;
     identifier->whql_level = (flags & WINED3DENUM_NO_WHQL_LEVEL) ? 0 : 1;
     identifier->adapter_luid = adapter->luid;
     identifier->video_memory = min(~(SIZE_T)0, adapter->driver_info.vram_bytes);
@@ -1869,7 +1871,7 @@ HRESULT CDECL wined3d_check_device_type(const struct wined3d *wined3d, UINT adap
     return WINED3D_OK;
 }
 
-HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapter_idx,
+HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, unsigned int adapter_idx,
         enum wined3d_device_type device_type, struct wined3d_caps *caps)
 {
     const struct wined3d_adapter *adapter = &wined3d->adapters[adapter_idx];
@@ -1893,8 +1895,6 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapte
     caps->Caps2                    = WINED3DCAPS2_CANRENDERWINDOWED |
                                      WINED3DCAPS2_FULLSCREENGAMMA |
                                      WINED3DCAPS2_DYNAMICTEXTURES;
-    if (gl_info->supported[ARB_FRAMEBUFFER_OBJECT] || gl_info->supported[EXT_FRAMEBUFFER_OBJECT])
-        caps->Caps2 |= WINED3DCAPS2_CANGENMIPMAP;
 
     caps->Caps3                    = WINED3DCAPS3_ALPHA_FULLSCREEN_FLIP_OR_DISCARD |
                                      WINED3DCAPS3_COPY_TO_VIDMEM                   |
@@ -1932,15 +1932,6 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapte
                                         WINED3DPMISCCAPS_MRTINDEPENDENTBITDEPTHS
                                         WINED3DPMISCCAPS_FOGVERTEXCLAMPED */
 
-    if (gl_info->supported[WINED3D_GL_BLEND_EQUATION])
-        caps->PrimitiveMiscCaps |= WINED3DPMISCCAPS_BLENDOP;
-    if (gl_info->supported[EXT_BLEND_EQUATION_SEPARATE] && gl_info->supported[EXT_BLEND_FUNC_SEPARATE])
-        caps->PrimitiveMiscCaps |= WINED3DPMISCCAPS_SEPARATEALPHABLEND;
-    if (gl_info->supported[EXT_DRAW_BUFFERS2])
-        caps->PrimitiveMiscCaps |= WINED3DPMISCCAPS_INDEPENDENTWRITEMASKS;
-    if (gl_info->supported[ARB_FRAMEBUFFER_SRGB])
-        caps->PrimitiveMiscCaps |= WINED3DPMISCCAPS_POSTBLENDSRGBCONVERT;
-
     caps->RasterCaps               = WINED3DPRASTERCAPS_DITHER    |
                                      WINED3DPRASTERCAPS_PAT       |
                                      WINED3DPRASTERCAPS_WFOG      |
@@ -1953,13 +1944,6 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapte
                                      WINED3DPRASTERCAPS_SCISSORTEST   |
                                      WINED3DPRASTERCAPS_SLOPESCALEDEPTHBIAS |
                                      WINED3DPRASTERCAPS_DEPTHBIAS;
-
-    if (gl_info->supported[ARB_TEXTURE_FILTER_ANISOTROPIC])
-    {
-        caps->RasterCaps  |= WINED3DPRASTERCAPS_ANISOTROPY    |
-                             WINED3DPRASTERCAPS_ZBIAS         |
-                             WINED3DPRASTERCAPS_MIPMAPLODBIAS;
-    }
 
     caps->ZCmpCaps =  WINED3DPCMPCAPS_ALWAYS       |
                       WINED3DPCMPCAPS_EQUAL        |
@@ -1997,16 +1981,6 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapte
                            WINED3DPBLENDCAPS_SRCCOLOR        |
                            WINED3DPBLENDCAPS_ZERO;
 
-    if (gl_info->supported[ARB_BLEND_FUNC_EXTENDED])
-        caps->DestBlendCaps |= WINED3DPBLENDCAPS_SRCALPHASAT;
-
-    if (gl_info->supported[EXT_BLEND_COLOR])
-    {
-        caps->SrcBlendCaps |= WINED3DPBLENDCAPS_BLENDFACTOR;
-        caps->DestBlendCaps |= WINED3DPBLENDCAPS_BLENDFACTOR;
-    }
-
-
     caps->AlphaCmpCaps  = WINED3DPCMPCAPS_ALWAYS       |
                           WINED3DPCMPCAPS_EQUAL        |
                           WINED3DPCMPCAPS_GREATER      |
@@ -2040,22 +2014,6 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapte
             caps->TextureCaps |= WINED3DPTEXTURECAPS_NONPOW2CONDITIONAL;
     }
 
-    if (gl_info->supported[EXT_TEXTURE3D])
-    {
-        caps->TextureCaps |= WINED3DPTEXTURECAPS_VOLUMEMAP
-                | WINED3DPTEXTURECAPS_MIPVOLUMEMAP;
-        if (!d3d_info->texture_npot)
-            caps->TextureCaps |= WINED3DPTEXTURECAPS_VOLUMEMAP_POW2;
-    }
-
-    if (gl_info->supported[ARB_TEXTURE_CUBE_MAP])
-    {
-        caps->TextureCaps |= WINED3DPTEXTURECAPS_CUBEMAP
-                | WINED3DPTEXTURECAPS_MIPCUBEMAP;
-        if (!d3d_info->texture_npot)
-            caps->TextureCaps |= WINED3DPTEXTURECAPS_CUBEMAP_POW2;
-    }
-
     caps->TextureFilterCaps =  WINED3DPTFILTERCAPS_MAGFLINEAR       |
                                WINED3DPTFILTERCAPS_MAGFPOINT        |
                                WINED3DPTFILTERCAPS_MINFLINEAR       |
@@ -2069,97 +2027,14 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapte
                                WINED3DPTFILTERCAPS_MIPNEAREST       |
                                WINED3DPTFILTERCAPS_NEAREST;
 
-    if (gl_info->supported[ARB_TEXTURE_FILTER_ANISOTROPIC])
-    {
-        caps->TextureFilterCaps  |= WINED3DPTFILTERCAPS_MAGFANISOTROPIC |
-                                    WINED3DPTFILTERCAPS_MINFANISOTROPIC;
-    }
-
-    if (gl_info->supported[ARB_TEXTURE_CUBE_MAP])
-    {
-        caps->CubeTextureFilterCaps =  WINED3DPTFILTERCAPS_MAGFLINEAR       |
-                                       WINED3DPTFILTERCAPS_MAGFPOINT        |
-                                       WINED3DPTFILTERCAPS_MINFLINEAR       |
-                                       WINED3DPTFILTERCAPS_MINFPOINT        |
-                                       WINED3DPTFILTERCAPS_MIPFLINEAR       |
-                                       WINED3DPTFILTERCAPS_MIPFPOINT        |
-                                       WINED3DPTFILTERCAPS_LINEAR           |
-                                       WINED3DPTFILTERCAPS_LINEARMIPLINEAR  |
-                                       WINED3DPTFILTERCAPS_LINEARMIPNEAREST |
-                                       WINED3DPTFILTERCAPS_MIPLINEAR        |
-                                       WINED3DPTFILTERCAPS_MIPNEAREST       |
-                                       WINED3DPTFILTERCAPS_NEAREST;
-
-        if (gl_info->supported[ARB_TEXTURE_FILTER_ANISOTROPIC])
-        {
-            caps->CubeTextureFilterCaps  |= WINED3DPTFILTERCAPS_MAGFANISOTROPIC |
-                                            WINED3DPTFILTERCAPS_MINFANISOTROPIC;
-        }
-    }
-    else
-    {
-        caps->CubeTextureFilterCaps = 0;
-    }
-
-    if (gl_info->supported[EXT_TEXTURE3D])
-    {
-        caps->VolumeTextureFilterCaps  = WINED3DPTFILTERCAPS_MAGFLINEAR       |
-                                         WINED3DPTFILTERCAPS_MAGFPOINT        |
-                                         WINED3DPTFILTERCAPS_MINFLINEAR       |
-                                         WINED3DPTFILTERCAPS_MINFPOINT        |
-                                         WINED3DPTFILTERCAPS_MIPFLINEAR       |
-                                         WINED3DPTFILTERCAPS_MIPFPOINT        |
-                                         WINED3DPTFILTERCAPS_LINEAR           |
-                                         WINED3DPTFILTERCAPS_LINEARMIPLINEAR  |
-                                         WINED3DPTFILTERCAPS_LINEARMIPNEAREST |
-                                         WINED3DPTFILTERCAPS_MIPLINEAR        |
-                                         WINED3DPTFILTERCAPS_MIPNEAREST       |
-                                         WINED3DPTFILTERCAPS_NEAREST;
-    }
-    else
-    {
-        caps->VolumeTextureFilterCaps = 0;
-    }
+    caps->CubeTextureFilterCaps = 0;
+    caps->VolumeTextureFilterCaps = 0;
 
     caps->TextureAddressCaps  =  WINED3DPTADDRESSCAPS_INDEPENDENTUV |
                                  WINED3DPTADDRESSCAPS_CLAMP  |
                                  WINED3DPTADDRESSCAPS_WRAP;
 
-    if (gl_info->supported[ARB_TEXTURE_BORDER_CLAMP])
-    {
-        caps->TextureAddressCaps |= WINED3DPTADDRESSCAPS_BORDER;
-    }
-    if (gl_info->supported[ARB_TEXTURE_MIRRORED_REPEAT])
-    {
-        caps->TextureAddressCaps |= WINED3DPTADDRESSCAPS_MIRROR;
-    }
-    if (gl_info->supported[ARB_TEXTURE_MIRROR_CLAMP_TO_EDGE])
-    {
-        caps->TextureAddressCaps |= WINED3DPTADDRESSCAPS_MIRRORONCE;
-    }
-
-    if (gl_info->supported[EXT_TEXTURE3D])
-    {
-        caps->VolumeTextureAddressCaps =   WINED3DPTADDRESSCAPS_INDEPENDENTUV |
-                                           WINED3DPTADDRESSCAPS_CLAMP  |
-                                           WINED3DPTADDRESSCAPS_WRAP;
-        if (gl_info->supported[ARB_TEXTURE_BORDER_CLAMP])
-        {
-            caps->VolumeTextureAddressCaps |= WINED3DPTADDRESSCAPS_BORDER;
-        }
-        if (gl_info->supported[ARB_TEXTURE_MIRRORED_REPEAT])
-        {
-            caps->VolumeTextureAddressCaps |= WINED3DPTADDRESSCAPS_MIRROR;
-        }
-        if (gl_info->supported[ARB_TEXTURE_MIRROR_CLAMP_TO_EDGE])
-        {
-            caps->VolumeTextureAddressCaps |= WINED3DPTADDRESSCAPS_MIRRORONCE;
-        }
-    }
-    else
-    {
-        caps->VolumeTextureAddressCaps = 0;
-    }
+    caps->VolumeTextureAddressCaps = 0;
 
     caps->LineCaps  = WINED3DLINECAPS_TEXTURE       |
                       WINED3DLINECAPS_ZTEST         |
@@ -2173,10 +2048,7 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapte
     caps->MaxTextureWidth = d3d_info->limits.texture_size;
     caps->MaxTextureHeight = d3d_info->limits.texture_size;
 
-    if (gl_info->supported[EXT_TEXTURE3D])
-        caps->MaxVolumeExtent = gl_info->limits.texture3d_size;
-    else
-        caps->MaxVolumeExtent = 0;
+    caps->MaxVolumeExtent = 0;
 
     caps->MaxTextureRepeat = 32768;
     caps->MaxTextureAspectRatio = d3d_info->limits.texture_size;
@@ -2195,18 +2067,8 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapte
                           WINED3DSTENCILCAPS_KEEP    |
                           WINED3DSTENCILCAPS_REPLACE |
                           WINED3DSTENCILCAPS_ZERO;
-    if (gl_info->supported[EXT_STENCIL_WRAP])
-    {
-        caps->StencilCaps |= WINED3DSTENCILCAPS_DECR  |
-                              WINED3DSTENCILCAPS_INCR;
-    }
-    if (gl_info->supported[WINED3D_GL_VERSION_2_0] || gl_info->supported[EXT_STENCIL_TWO_SIDE]
-            || gl_info->supported[ATI_SEPARATE_STENCIL])
-    {
-        caps->StencilCaps |= WINED3DSTENCILCAPS_TWOSIDED;
-    }
 
-    caps->MaxAnisotropy = gl_info->limits.anisotropy;
+    caps->MaxAnisotropy = 0;
     caps->MaxPointSize = d3d_info->limits.pointsize_max;
 
     caps->MaxPrimitiveCount   = 0x555555; /* Taken from an AMD Radeon HD 5700 (Evergreen) GPU. */
@@ -2429,20 +2291,12 @@ HRESULT CDECL wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapte
             | WINEDDSCAPS_SYSTEMMEMORY
             | WINEDDSCAPS_VISIBLE;
 
-    if (!(wined3d->flags & WINED3D_NO3D))
-    {
-        caps->ddraw_caps.dds_caps |= WINEDDSCAPS_3DDEVICE
-                | WINEDDSCAPS_MIPMAP
-                | WINEDDSCAPS_TEXTURE
-                | WINEDDSCAPS_VIDEOMEMORY
-                | WINEDDSCAPS_ZBUFFER;
-        caps->ddraw_caps.caps |= WINEDDCAPS_3D;
-    }
-
     caps->shader_double_precision = d3d_info->shader_double_precision;
     caps->viewport_array_index_any_shader = d3d_info->viewport_array_index_any_shader;
 
     caps->max_feature_level = d3d_info->feature_level;
+
+    adapter->adapter_ops->adapter_get_wined3d_caps(adapter, caps);
 
     return WINED3D_OK;
 }
@@ -2489,9 +2343,14 @@ static BOOL wined3d_adapter_no3d_create_context(struct wined3d_context *context,
     return TRUE;
 }
 
+static void adapter_no3d_get_wined3d_caps(const struct wined3d_adapter *adapter, struct wined3d_caps *caps)
+{
+}
+
 static const struct wined3d_adapter_ops wined3d_adapter_no3d_ops =
 {
     wined3d_adapter_no3d_create_context,
+    adapter_no3d_get_wined3d_caps,
 };
 
 static void wined3d_adapter_no3d_init_d3d_info(struct wined3d_adapter *adapter, DWORD wined3d_creation_flags)
@@ -2547,6 +2406,9 @@ static BOOL wined3d_adapter_init(struct wined3d_adapter *adapter, unsigned int o
     }
     TRACE("Allocated LUID %08x:%08x for adapter %p.\n",
             adapter->luid.HighPart, adapter->luid.LowPart, adapter);
+
+    memset(&adapter->driver_uuid, 0, sizeof(adapter->driver_uuid));
+    memset(&adapter->device_uuid, 0, sizeof(adapter->device_uuid));
 
     adapter->formats = NULL;
 

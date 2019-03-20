@@ -130,6 +130,50 @@ function test_isArray() {
     next_test();
 }
 
+function test_array_map() {
+    var calls, m, arr, ctx;
+
+    /* basic map call with context */
+    calls = "";
+    arr = [1,2,3];
+    ctx = {};
+    m = arr.map(function(x, i, a) {
+        ok(this === ctx, "this != ctx");
+        ok(i === x - 1, "i = " + i);
+        ok(a === arr, "a != arr");
+        calls += x + ",";
+        return x * 2;
+    }, ctx);
+    ok(calls === "1,2,3,", "calls = " + calls);
+    ok(m.join() === "2,4,6", "m = " + m);
+
+    /* non-array object as this argument */
+    calls = "";
+    arr = { 1: "one", 2: "two", 3: "three", length: 3 };
+    m = Array.prototype.map.call(arr, function(x, i) {
+        calls += i + ":" + x + ",";
+        return x + "!";
+    });
+    ok(calls === "1:one,2:two,", "calls = " + calls);
+    ok(m.join() === ",one!,two!", "m = " + m);
+    ok(!("0" in m), "0 is in m");
+
+    /* mutate array in callback */
+    calls = "";
+    arr = [1,2,3];
+    m = Array.prototype.map.call(arr, function(x, i) {
+        calls += i + ":" + x + ",";
+        for(var j = i; j < arr.length; j++)
+            arr[j]++;
+        arr.push(i * i);
+        return x - 1;
+    });
+    ok(calls === "0:1,1:3,2:5,", "calls = " + calls);
+    ok(m.join() === "0,2,4", "m = " + m);
+
+    next_test();
+}
+
 function test_identifier_keywords() {
     var o = {
         if: 1,
@@ -592,17 +636,58 @@ function test_string_split() {
     next_test();
 }
 
+function test_getPrototypeOf() {
+    ok(Object.create.length === 2, "Object.create.length = " + Object.create.length);
+    ok(Object.getPrototypeOf.length === 1, "Object.getPrototypeOf.length = " + Object.getPrototypeOf.length);
+
+    ok(Object.getPrototypeOf(new Object()) === Object.prototype,
+       "Object.getPrototypeOf(new Object()) !== Object.prototype");
+
+    function Constr() {}
+    var obj = new Constr();
+    ok(Object.getPrototypeOf(Constr.prototype) === Object.prototype,
+       "Object.getPrototypeOf(Constr.prototype) !== Object.prototype");
+    ok(Object.getPrototypeOf(obj) === Constr.prototype,
+       "Object.getPrototypeOf(obj) !== Constr.prototype");
+
+    var proto = new Object();
+    Constr.prototype = proto;
+    ok(Object.getPrototypeOf(obj) != proto,
+       "Object.getPrototypeOf(obj) == proto");
+    obj = new Constr();
+    ok(Object.getPrototypeOf(obj) === proto,
+       "Object.getPrototypeOf(obj) !== proto");
+    ok(Object.getPrototypeOf(obj, 2, 3, 4) === proto,
+       "Object.getPrototypeOf(obj) !== proto");
+
+    ok(Object.getPrototypeOf(Object.prototype) === null,
+       "Object.getPrototypeOf(Object.prototype) !== null");
+
+    obj = Object.create(proto = { test: 1 });
+    ok(Object.getPrototypeOf(obj) === proto,
+       "Object.getPrototypeOf(obj) !== proto");
+    ok(obj.test === 1, "obj.test = " + obj.test);
+
+    obj = Object.create(null);
+    ok(!("toString" in obj), "toString is in obj");
+    ok(Object.getPrototypeOf(obj) === null, "Object.getPrototypeOf(obj) = " + Object.getPrototypeOf(obj));
+
+    next_test();
+}
+
 var tests = [
     test_date_now,
     test_toISOString,
     test_indexOf,
     test_array_forEach,
     test_isArray,
+    test_array_map,
     test_identifier_keywords,
     test_getOwnPropertyDescriptor,
     test_defineProperty,
     test_property_definitions,
     test_string_trim,
     test_global_properties,
-    test_string_split
+    test_string_split,
+    test_getPrototypeOf
 ];

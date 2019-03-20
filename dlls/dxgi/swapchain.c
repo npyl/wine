@@ -85,7 +85,7 @@ BOOL dxgi_validate_swapchain_desc(const DXGI_SWAP_CHAIN_DESC1 *desc)
         case DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL:
             min_buffer_count = 2;
 
-            if (!dxgi_validate_flip_swap_effect_format(desc->Format))
+            if (desc->Format && !dxgi_validate_flip_swap_effect_format(desc->Format))
                 return FALSE;
 
             if (desc->SampleDesc.Count != 1 || desc->SampleDesc.Quality)
@@ -108,6 +108,57 @@ BOOL dxgi_validate_swapchain_desc(const DXGI_SWAP_CHAIN_DESC1 *desc)
     }
 
     return TRUE;
+}
+
+static HRESULT dxgi_get_output_from_window(IDXGIAdapter *adapter, HWND window, IDXGIOutput **dxgi_output)
+{
+    DXGI_OUTPUT_DESC desc;
+    IDXGIOutput *output;
+    unsigned int index;
+    HMONITOR monitor;
+    HRESULT hr;
+
+    if (!(monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST)))
+    {
+        WARN("Failed to get monitor from window.\n");
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
+    index = 0;
+    while ((hr = IDXGIAdapter_EnumOutputs(adapter, index, &output)) == S_OK)
+    {
+        if (FAILED(hr = IDXGIOutput_GetDesc(output, &desc)))
+        {
+            WARN("Failed to get output desc %u, hr %#x.\n", index, hr);
+            ++index;
+            continue;
+        }
+
+        if (desc.Monitor == monitor)
+        {
+            *dxgi_output = output;
+            return S_OK;
+        }
+
+        IDXGIOutput_Release(output);
+        ++index;
+    }
+    if (hr != DXGI_ERROR_NOT_FOUND)
+        WARN("Failed to enumerate outputs, hr %#x.\n", hr);
+
+    WARN("Output could not be found.\n");
+    return DXGI_ERROR_NOT_FOUND;
+}
+
+static HWND d3d11_swapchain_get_hwnd(struct d3d11_swapchain *swapchain)
+{
+    struct wined3d_swapchain_desc wined3d_desc;
+
+    wined3d_mutex_lock();
+    wined3d_swapchain_get_desc(swapchain->wined3d_swapchain, &wined3d_desc);
+    wined3d_mutex_unlock();
+
+    return wined3d_desc.device_window;
 }
 
 static inline struct d3d11_swapchain *d3d11_swapchain_from_IDXGISwapChain1(IDXGISwapChain1 *iface)
@@ -244,13 +295,33 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetDevice(IDXGISwapChain1 *ifac
 
 /* IDXGISwapChain1 methods */
 
+static HRESULT d3d11_swapchain_present(struct d3d11_swapchain *swapchain,
+        unsigned int sync_interval, unsigned int flags)
+{
+    if (sync_interval > 4)
+    {
+        WARN("Invalid sync interval %u.\n", sync_interval);
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
+    if (flags & ~DXGI_PRESENT_TEST)
+        FIXME("Unimplemented flags %#x.\n", flags);
+    if (flags & DXGI_PRESENT_TEST)
+    {
+        WARN("Returning S_OK for DXGI_PRESENT_TEST.\n");
+        return S_OK;
+    }
+
+    return wined3d_swapchain_present(swapchain->wined3d_swapchain, NULL, NULL, NULL, sync_interval, 0);
+}
+
 static HRESULT STDMETHODCALLTYPE d3d11_swapchain_Present(IDXGISwapChain1 *iface, UINT sync_interval, UINT flags)
 {
     struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IDXGISwapChain1(iface);
 
     TRACE("iface %p, sync_interval %u, flags %#x.\n", iface, sync_interval, flags);
 
-    return IDXGISwapChain1_Present1(&swapchain->IDXGISwapChain1_iface, sync_interval, flags, NULL);
+    return d3d11_swapchain_present(swapchain, sync_interval, flags);
 }
 
 static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetBuffer(IDXGISwapChain1 *iface,
@@ -462,25 +533,23 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetContainingOutput(IDXGISwapCh
         return S_OK;
     }
 
-    if (FAILED(hr = d3d11_swapchain_GetDevice(iface, &IID_IDXGIDevice, (void **)&device)))
-        return hr;
-
-    hr = IDXGIDevice_GetAdapter(device, &adapter);
-    IDXGIDevice_Release(device);
-    if (FAILED(hr))
+    if (SUCCEEDED(hr = d3d11_swapchain_GetDevice(iface, &IID_IDXGIDevice, (void **)&device)))
     {
-        WARN("GetAdapter failed, hr %#x.\n", hr);
-        return hr;
+        hr = IDXGIDevice_GetAdapter(device, &adapter);
+        IDXGIDevice_Release(device);
     }
 
-    if (SUCCEEDED(IDXGIAdapter_EnumOutputs(adapter, 1, output)))
+    if (SUCCEEDED(hr))
     {
-        FIXME("Adapter has got multiple outputs, returning the first one.\n");
-        IDXGIOutput_Release(*output);
+        HWND hwnd = d3d11_swapchain_get_hwnd(swapchain);
+        hr = dxgi_get_output_from_window(adapter, hwnd, output);
+        IDXGIAdapter_Release(adapter);
+    }
+    else
+    {
+        WARN("Failed to get adapter, hr %#x.\n", hr);
     }
 
-    hr = IDXGIAdapter_EnumOutputs(adapter, 0, output);
-    IDXGIAdapter_Release(adapter);
     return hr;
 }
 
@@ -569,7 +638,6 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetFullscreenDesc(IDXGISwapChai
 static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetHwnd(IDXGISwapChain1 *iface, HWND *hwnd)
 {
     struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IDXGISwapChain1(iface);
-    struct wined3d_swapchain_desc wined3d_desc;
 
     TRACE("iface %p, hwnd %p.\n", iface, hwnd);
 
@@ -579,11 +647,7 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetHwnd(IDXGISwapChain1 *iface,
         return DXGI_ERROR_INVALID_CALL;
     }
 
-    wined3d_mutex_lock();
-    wined3d_swapchain_get_desc(swapchain->wined3d_swapchain, &wined3d_desc);
-    wined3d_mutex_unlock();
-
-    *hwnd = wined3d_desc.device_window;
+    *hwnd = d3d11_swapchain_get_hwnd(swapchain);
     return S_OK;
 }
 
@@ -606,24 +670,10 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_Present1(IDXGISwapChain1 *iface
     TRACE("iface %p, sync_interval %u, flags %#x, present_parameters %p.\n",
             iface, sync_interval, flags, present_parameters);
 
-    if (sync_interval > 4)
-    {
-        WARN("Invalid sync interval %u.\n", sync_interval);
-        return DXGI_ERROR_INVALID_CALL;
-    }
-
-    if (flags & ~DXGI_PRESENT_TEST)
-        FIXME("Unimplemented flags %#x.\n", flags);
-    if (flags & DXGI_PRESENT_TEST)
-    {
-        WARN("Returning S_OK for DXGI_PRESENT_TEST.\n");
-        return S_OK;
-    }
-
     if (present_parameters)
         FIXME("Ignored present parameters %p.\n", present_parameters);
 
-    return wined3d_swapchain_present(swapchain->wined3d_swapchain, NULL, NULL, NULL, sync_interval, 0);
+    return d3d11_swapchain_present(swapchain, sync_interval, flags);
 }
 
 static BOOL STDMETHODCALLTYPE d3d11_swapchain_IsTemporaryMonoSupported(IDXGISwapChain1 *iface)
@@ -738,6 +788,9 @@ HRESULT d3d11_swapchain_init(struct d3d11_swapchain *swapchain, struct dxgi_devi
      */
     if (!implicit)
     {
+        if (desc->backbuffer_format == WINED3DFMT_UNKNOWN)
+            return E_INVALIDARG;
+
         if (FAILED(hr = IWineDXGIAdapter_GetParent(device->adapter, &IID_IDXGIFactory,
                 (void **)&swapchain->factory)))
         {
@@ -807,6 +860,7 @@ cleanup:
 
 static PFN_vkd3d_acquire_vk_queue vkd3d_acquire_vk_queue;
 static PFN_vkd3d_create_image_resource vkd3d_create_image_resource;
+static PFN_vkd3d_get_device_parent vkd3d_get_device_parent;
 static PFN_vkd3d_get_vk_device vkd3d_get_vk_device;
 static PFN_vkd3d_get_vk_format vkd3d_get_vk_format;
 static PFN_vkd3d_get_vk_physical_device vkd3d_get_vk_physical_device;
@@ -1067,7 +1121,7 @@ static BOOL d3d12_swapchain_is_present_mode_supported(struct d3d12_swapchain *sw
     return supported;
 }
 
-static BOOL d3d12_swapchain_have_user_images(struct d3d12_swapchain *swapchain)
+static BOOL d3d12_swapchain_has_user_images(struct d3d12_swapchain *swapchain)
 {
     return !!swapchain->vk_images[0];
 }
@@ -1086,7 +1140,7 @@ static HRESULT d3d12_swapchain_create_user_buffers(struct d3d12_swapchain *swapc
     VkResult vr;
     HRESULT hr;
 
-    if (d3d12_swapchain_have_user_images(swapchain))
+    if (d3d12_swapchain_has_user_images(swapchain))
         return S_OK;
 
     memset(&image_info, 0, sizeof(image_info));
@@ -1458,7 +1512,7 @@ static void d3d12_swapchain_destroy_buffers(struct d3d12_swapchain *swapchain, B
 
     for (i = 0; i < swapchain->buffer_count; ++i)
     {
-        if (swapchain->buffers[i] && (destroy_user_buffers || !d3d12_swapchain_have_user_images(swapchain)))
+        if (swapchain->buffers[i] && (destroy_user_buffers || !d3d12_swapchain_has_user_images(swapchain)))
         {
             vkd3d_resource_decref(swapchain->buffers[i]);
             swapchain->buffers[i] = NULL;
@@ -1745,13 +1799,186 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetDevice(IDXGISwapChain3 *ifac
 
 /* IDXGISwapChain methods */
 
+static HRESULT d3d12_swapchain_set_sync_interval(struct d3d12_swapchain *swapchain,
+        unsigned int sync_interval)
+{
+    VkPresentModeKHR present_mode;
+
+    switch (sync_interval)
+    {
+        case 0:
+            present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+            break;
+        default:
+            FIXME("Unsupported sync interval %u.\n", sync_interval);
+        case 1:
+            present_mode = VK_PRESENT_MODE_FIFO_KHR;
+            break;
+    }
+
+    if (swapchain->present_mode == present_mode)
+        return S_OK;
+
+    /*
+     * We recreate the swapchain only when the current buffer index is 0, in order to preserve the
+     * expected back buffer index sequence.
+     */
+    if (swapchain->current_buffer_index)
+    {
+        WARN("Skipping sync interval change, current buffer index %u.\n", swapchain->current_buffer_index);
+        return S_OK;
+    }
+
+    if (!d3d12_swapchain_has_user_images(swapchain))
+    {
+        FIXME("Cannot recreate swapchain without user images.\n");
+        return S_OK;
+    }
+
+    if (!d3d12_swapchain_is_present_mode_supported(swapchain, present_mode))
+    {
+        FIXME("Vulkan present mode %#x is not supported.\n", present_mode);
+        return S_OK;
+    }
+
+    d3d12_swapchain_destroy_buffers(swapchain, FALSE);
+    swapchain->present_mode = present_mode;
+    return d3d12_swapchain_recreate_vulkan_swapchain(swapchain);
+}
+
+static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain, VkQueue vk_queue)
+{
+    const struct dxgi_vk_funcs *vk_funcs = &swapchain->vk_funcs;
+    VkPresentInfoKHR present_info;
+    VkSubmitInfo submit_info;
+    VkResult vr;
+
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.pNext = NULL;
+    present_info.waitSemaphoreCount = 0;
+    present_info.pWaitSemaphores = NULL;
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = &swapchain->vk_swapchain;
+    present_info.pImageIndices = &swapchain->current_buffer_index;
+    present_info.pResults = NULL;
+
+    if (d3d12_swapchain_has_user_images(swapchain))
+    {
+        /* blit */
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.pNext = NULL;
+        submit_info.waitSemaphoreCount = 0;
+        submit_info.pWaitSemaphores = NULL;
+        submit_info.pWaitDstStageMask = NULL;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &swapchain->vk_cmd_buffers[swapchain->current_buffer_index];
+        submit_info.signalSemaphoreCount = 1;
+        submit_info.pSignalSemaphores = &swapchain->vk_semaphores[swapchain->current_buffer_index];
+
+        if ((vr = vk_funcs->p_vkQueueSubmit(vk_queue, 1, &submit_info, VK_NULL_HANDLE)) < 0)
+        {
+            ERR("Failed to blit swapchain buffer, vr %d.\n", vr);
+            return vr;
+        }
+
+        present_info.waitSemaphoreCount = 1;
+        present_info.pWaitSemaphores = &swapchain->vk_semaphores[swapchain->current_buffer_index];
+    }
+
+    return vk_funcs->p_vkQueuePresentKHR(vk_queue, &present_info);
+}
+
+static HRESULT d3d12_swapchain_present(struct d3d12_swapchain *swapchain,
+        unsigned int sync_interval, unsigned int flags)
+{
+    VkQueue vk_queue;
+    VkResult vr;
+    HRESULT hr;
+
+    if (sync_interval > 4)
+    {
+        WARN("Invalid sync interval %u.\n", sync_interval);
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
+    if (flags & ~DXGI_PRESENT_TEST)
+        FIXME("Unimplemented flags %#x.\n", flags);
+    if (flags & DXGI_PRESENT_TEST)
+    {
+        WARN("Returning S_OK for DXGI_PRESENT_TEST.\n");
+        return S_OK;
+    }
+
+    if (FAILED(hr = d3d12_swapchain_set_sync_interval(swapchain, sync_interval)))
+        return hr;
+
+    if (!(vk_queue = vkd3d_acquire_vk_queue(swapchain->command_queue)))
+    {
+        ERR("Failed to acquire Vulkan queue.\n");
+        return E_FAIL;
+    }
+
+    vr = d3d12_swapchain_queue_present(swapchain, vk_queue);
+    if (vr == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        vkd3d_release_vk_queue(swapchain->command_queue);
+
+        if (!d3d12_swapchain_has_user_images(swapchain))
+        {
+            FIXME("Cannot recreate swapchain without user images.\n");
+            return DXGI_STATUS_MODE_CHANGED;
+        }
+
+        TRACE("Recreating Vulkan swapchain.\n");
+
+        d3d12_swapchain_destroy_buffers(swapchain, FALSE);
+        if (FAILED(hr = d3d12_swapchain_recreate_vulkan_swapchain(swapchain)))
+            return hr;
+
+        if (!(vk_queue = vkd3d_acquire_vk_queue(swapchain->command_queue)))
+        {
+            ERR("Failed to acquire Vulkan queue.\n");
+            return E_FAIL;
+        }
+
+        if ((vr = d3d12_swapchain_queue_present(swapchain, vk_queue)) < 0)
+            ERR("Failed to present after recreating swapchain, vr %d.\n", vr);
+    }
+
+    vkd3d_release_vk_queue(swapchain->command_queue);
+
+    if (vr < 0)
+    {
+        ERR("Failed to queue present, vr %d.\n", vr);
+        return hresult_from_vk_result(vr);
+    }
+
+    vr = d3d12_swapchain_acquire_next_image(swapchain);
+    if (vr == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        if (!d3d12_swapchain_has_user_images(swapchain))
+        {
+            FIXME("Cannot recreate swapchain without user images.\n");
+            return DXGI_STATUS_MODE_CHANGED;
+        }
+
+        TRACE("Recreating Vulkan swapchain.\n");
+
+        d3d12_swapchain_destroy_buffers(swapchain, FALSE);
+        return d3d12_swapchain_recreate_vulkan_swapchain(swapchain);
+    }
+    if (vr < 0)
+        ERR("Failed to acquire next Vulkan image, vr %d.\n", vr);
+    return hresult_from_vk_result(vr);
+}
+
 static HRESULT STDMETHODCALLTYPE d3d12_swapchain_Present(IDXGISwapChain3 *iface, UINT sync_interval, UINT flags)
 {
     struct d3d12_swapchain *swapchain = d3d12_swapchain_from_IDXGISwapChain3(iface);
 
     TRACE("iface %p, sync_interval %u, flags %#x.\n", iface, sync_interval, flags);
 
-    return IDXGISwapChain3_Present1(&swapchain->IDXGISwapChain3_iface, sync_interval, flags, NULL);
+    return d3d12_swapchain_present(swapchain, sync_interval, flags);
 }
 
 static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetBuffer(IDXGISwapChain3 *iface,
@@ -1891,9 +2118,26 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_ResizeTarget(IDXGISwapChain3 *i
 static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetContainingOutput(IDXGISwapChain3 *iface,
         IDXGIOutput **output)
 {
-    FIXME("iface %p, output %p stub!\n", iface, output);
+    struct d3d12_swapchain *swapchain = d3d12_swapchain_from_IDXGISwapChain3(iface);
+    IUnknown *device_parent;
+    IDXGIAdapter *adapter;
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("iface %p, output %p.\n", iface, output);
+
+    device_parent = vkd3d_get_device_parent(swapchain->device);
+
+    if (SUCCEEDED(hr = IUnknown_QueryInterface(device_parent, &IID_IDXGIAdapter, (void **)&adapter)))
+    {
+        hr = dxgi_get_output_from_window(adapter, swapchain->window, output);
+        IDXGIAdapter_Release(adapter);
+    }
+    else
+    {
+        WARN("Failed to get adapter, hr %#x.\n", hr);
+    }
+
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetFrameStatistics(IDXGISwapChain3 *iface,
@@ -1974,177 +2218,18 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetCoreWindow(IDXGISwapChain3 *
     return DXGI_ERROR_INVALID_CALL;
 }
 
-static HRESULT d3d12_swapchain_set_sync_interval(struct d3d12_swapchain *swapchain,
-        unsigned int sync_interval)
-{
-    VkPresentModeKHR present_mode;
-
-    switch (sync_interval)
-    {
-        case 0:
-            present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-            break;
-        default:
-            FIXME("Unsupported sync interval %u.\n", sync_interval);
-        case 1:
-            present_mode = VK_PRESENT_MODE_FIFO_KHR;
-            break;
-    }
-
-    if (swapchain->present_mode == present_mode)
-        return S_OK;
-
-    /*
-     * We recreate the swapchain only when the current buffer index is 0, in order to preserve the
-     * expected back buffer index sequence.
-     */
-    if (swapchain->current_buffer_index)
-    {
-        WARN("Skipping sync interval change, current buffer index %u.\n", swapchain->current_buffer_index);
-        return S_OK;
-    }
-
-    if (!d3d12_swapchain_have_user_images(swapchain))
-    {
-        FIXME("Cannot recreate swapchain without user images.\n");
-        return S_OK;
-    }
-
-    if (!d3d12_swapchain_is_present_mode_supported(swapchain, present_mode))
-    {
-        FIXME("Vulkan present mode %#x is not supported.\n", present_mode);
-        return S_OK;
-    }
-
-    d3d12_swapchain_destroy_buffers(swapchain, FALSE);
-    swapchain->present_mode = present_mode;
-    return d3d12_swapchain_recreate_vulkan_swapchain(swapchain);
-}
-
-static VkResult d3d12_swapchain_queue_present(struct d3d12_swapchain *swapchain, VkQueue vk_queue)
-{
-    const struct dxgi_vk_funcs *vk_funcs = &swapchain->vk_funcs;
-    VkPresentInfoKHR present_info;
-    VkSubmitInfo submit_info;
-    VkResult vr;
-
-    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    present_info.pNext = NULL;
-    present_info.waitSemaphoreCount = 0;
-    present_info.pWaitSemaphores = NULL;
-    present_info.swapchainCount = 1;
-    present_info.pSwapchains = &swapchain->vk_swapchain;
-    present_info.pImageIndices = &swapchain->current_buffer_index;
-    present_info.pResults = NULL;
-
-    if (d3d12_swapchain_have_user_images(swapchain))
-    {
-        /* blit */
-        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.pNext = NULL;
-        submit_info.waitSemaphoreCount = 0;
-        submit_info.pWaitSemaphores = NULL;
-        submit_info.pWaitDstStageMask = NULL;
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &swapchain->vk_cmd_buffers[swapchain->current_buffer_index];
-        submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = &swapchain->vk_semaphores[swapchain->current_buffer_index];
-
-        if ((vr = vk_funcs->p_vkQueueSubmit(vk_queue, 1, &submit_info, VK_NULL_HANDLE)) < 0)
-        {
-            ERR("Failed to blit swapchain buffer, vr %d.\n", vr);
-            return vr;
-        }
-
-        present_info.waitSemaphoreCount = 1;
-        present_info.pWaitSemaphores = &swapchain->vk_semaphores[swapchain->current_buffer_index];
-    }
-
-    return vk_funcs->p_vkQueuePresentKHR(vk_queue, &present_info);
-}
-
 static HRESULT STDMETHODCALLTYPE d3d12_swapchain_Present1(IDXGISwapChain3 *iface,
         UINT sync_interval, UINT flags, const DXGI_PRESENT_PARAMETERS *present_parameters)
 {
     struct d3d12_swapchain *swapchain = d3d12_swapchain_from_IDXGISwapChain3(iface);
-    VkQueue vk_queue;
-    VkResult vr;
-    HRESULT hr;
 
     TRACE("iface %p, sync_interval %u, flags %#x, present_parameters %p.\n",
             iface, sync_interval, flags, present_parameters);
 
-    if (sync_interval > 4)
-    {
-        WARN("Invalid sync interval %u.\n", sync_interval);
-        return DXGI_ERROR_INVALID_CALL;
-    }
-
-    if (flags & ~DXGI_PRESENT_TEST)
-        FIXME("Unimplemented flags %#x.\n", flags);
-    if (flags & DXGI_PRESENT_TEST)
-    {
-        WARN("Returning S_OK for DXGI_PRESENT_TEST.\n");
-        return S_OK;
-    }
-
     if (present_parameters)
         FIXME("Ignored present parameters %p.\n", present_parameters);
 
-    if (FAILED(hr = d3d12_swapchain_set_sync_interval(swapchain, sync_interval)))
-        return hr;
-
-    if (!(vk_queue = vkd3d_acquire_vk_queue(swapchain->command_queue)))
-    {
-        ERR("Failed to acquire Vulkan queue.\n");
-        return E_FAIL;
-    }
-
-    vr = d3d12_swapchain_queue_present(swapchain, vk_queue);
-    if (vr == VK_ERROR_OUT_OF_DATE_KHR)
-    {
-        vkd3d_release_vk_queue(swapchain->command_queue);
-
-        if (!d3d12_swapchain_have_user_images(swapchain))
-        {
-            FIXME("Cannot recreate swapchain without user images.\n");
-            return DXGI_STATUS_MODE_CHANGED;
-        }
-
-        TRACE("Recreating Vulkan swapchain.\n");
-
-        d3d12_swapchain_destroy_buffers(swapchain, FALSE);
-        if (FAILED(hr = d3d12_swapchain_recreate_vulkan_swapchain(swapchain)))
-            return hr;
-
-        if (!(vk_queue = vkd3d_acquire_vk_queue(swapchain->command_queue)))
-        {
-            ERR("Failed to acquire Vulkan queue.\n");
-            return E_FAIL;
-        }
-
-        if ((vr = d3d12_swapchain_queue_present(swapchain, vk_queue)) < 0)
-            ERR("Failed to present after recreating swapchain, vr %d.\n", vr);
-    }
-
-    vkd3d_release_vk_queue(swapchain->command_queue);
-
-    if (vr < 0)
-    {
-        ERR("Failed to queue present, vr %d.\n", vr);
-        return hresult_from_vk_result(vr);
-    }
-
-    vr = d3d12_swapchain_acquire_next_image(swapchain);
-    if (vr == VK_ERROR_OUT_OF_DATE_KHR)
-    {
-        TRACE("Recreating Vulkan swapchain.\n");
-        d3d12_swapchain_destroy_buffers(swapchain, FALSE);
-        return d3d12_swapchain_recreate_vulkan_swapchain(swapchain);
-    }
-    if (vr < 0)
-        ERR("Failed to acquire next Vulkan image, vr %d.\n", vr);
-    return hresult_from_vk_result(vr);
+    return d3d12_swapchain_present(swapchain, sync_interval, flags);
 }
 
 static BOOL STDMETHODCALLTYPE d3d12_swapchain_IsTemporaryMonoSupported(IDXGISwapChain3 *iface)
@@ -2355,6 +2440,7 @@ static BOOL load_vkd3d_functions(void *vkd3d_handle)
 #define LOAD_FUNCPTR(f) if (!(f = wine_dlsym(vkd3d_handle, #f, NULL, 0))) return FALSE;
     LOAD_FUNCPTR(vkd3d_acquire_vk_queue)
     LOAD_FUNCPTR(vkd3d_create_image_resource)
+    LOAD_FUNCPTR(vkd3d_get_device_parent)
     LOAD_FUNCPTR(vkd3d_get_vk_device)
     LOAD_FUNCPTR(vkd3d_get_vk_format)
     LOAD_FUNCPTR(vkd3d_get_vk_physical_device)
@@ -2596,6 +2682,9 @@ HRESULT d3d12_swapchain_create(IWineDXGIFactory *factory, ID3D12CommandQueue *qu
     struct d3d12_swapchain *object;
     ID3D12Device *device;
     HRESULT hr;
+
+    if (swapchain_desc->Format == DXGI_FORMAT_UNKNOWN)
+        return DXGI_ERROR_INVALID_CALL;
 
     if (!fullscreen_desc)
     {

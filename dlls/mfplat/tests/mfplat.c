@@ -29,10 +29,22 @@
 #include "winreg.h"
 
 #include "initguid.h"
+#include "ole2.h"
+
+DEFINE_GUID(GUID_NULL,0,0,0,0,0,0,0,0,0,0,0);
+DEFINE_GUID(DUMMY_CLSID, 0x12345678,0x1234,0x1234,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19);
+DEFINE_GUID(DUMMY_GUID1, 0x12345678,0x1234,0x1234,0x21,0x21,0x21,0x21,0x21,0x21,0x21,0x21);
+DEFINE_GUID(DUMMY_GUID2, 0x12345678,0x1234,0x1234,0x22,0x22,0x22,0x22,0x22,0x22,0x22,0x22);
+DEFINE_GUID(DUMMY_GUID3, 0x12345678,0x1234,0x1234,0x23,0x23,0x23,0x23,0x23,0x23,0x23,0x23);
+
+#undef INITGUID
+#include <guiddef.h>
 #include "mfapi.h"
 #include "mfidl.h"
 #include "mferror.h"
 #include "mfreadwrite.h"
+#include "propvarutil.h"
+#include "strsafe.h"
 
 #include "wine/test.h"
 
@@ -42,25 +54,12 @@ static HRESULT (WINAPI *pMFCopyImage)(BYTE *dest, LONG deststride, const BYTE *s
         DWORD width, DWORD lines);
 static HRESULT (WINAPI *pMFCreateSourceResolver)(IMFSourceResolver **resolver);
 static HRESULT (WINAPI *pMFCreateMFByteStreamOnStream)(IStream *stream, IMFByteStream **bytestream);
-static HRESULT (WINAPI *pMFCreateMemoryBuffer)(DWORD max_length, IMFMediaBuffer **buffer);
 static void*   (WINAPI *pMFHeapAlloc)(SIZE_T size, ULONG flags, char *file, int line, EAllocationType type);
 static void    (WINAPI *pMFHeapFree)(void *p);
 static HRESULT (WINAPI *pMFPutWaitingWorkItem)(HANDLE event, LONG priority, IMFAsyncResult *result, MFWORKITEM_KEY *key);
 static HRESULT (WINAPI *pMFAllocateSerialWorkQueue)(DWORD queue, DWORD *serial_queue);
 static HRESULT (WINAPI *pMFAddPeriodicCallback)(MFPERIODICCALLBACK callback, IUnknown *context, DWORD *key);
 static HRESULT (WINAPI *pMFRemovePeriodicCallback)(DWORD key);
-
-DEFINE_GUID(GUID_NULL,0,0,0,0,0,0,0,0,0,0,0);
-
-DEFINE_GUID(MF_BYTESTREAM_CONTENT_TYPE, 0xfc358289,0x3cb6,0x460c,0xa4,0x24,0xb6,0x68,0x12,0x60,0x37,0x5a);
-
-DEFINE_GUID(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 0xa634a91c, 0x822b, 0x41b9, 0xa4, 0x94, 0x4d, 0xe4, 0x64, 0x36, 0x12, 0xb0);
-
-DEFINE_GUID(MFT_CATEGORY_OTHER, 0x90175d57,0xb7ea,0x4901,0xae,0xb3,0x93,0x3a,0x87,0x47,0x75,0x6f);
-
-DEFINE_GUID(DUMMY_CLSID, 0x12345678,0x1234,0x1234,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19);
-DEFINE_GUID(DUMMY_GUID1, 0x12345678,0x1234,0x1234,0x21,0x21,0x21,0x21,0x21,0x21,0x21,0x21);
-DEFINE_GUID(DUMMY_GUID2, 0x12345678,0x1234,0x1234,0x22,0x22,0x22,0x22,0x22,0x22,0x22,0x22);
 
 static const WCHAR mp4file[] = {'t','e','s','t','.','m','p','4',0};
 
@@ -287,7 +286,7 @@ static void test_source_resolver(void)
                                  (void **)&attributes);
     ok(hr == S_OK, "got 0x%08x\n", hr);
     hr = IMFAttributes_SetString(attributes, &MF_BYTESTREAM_CONTENT_TYPE, file_type);
-    todo_wine ok(hr == S_OK, "got 0x%08x\n", hr);
+    ok(hr == S_OK, "Failed to set string value, hr %#x.\n", hr);
     IMFAttributes_Release(attributes);
 
     hr = IMFSourceResolver_CreateObjectFromByteStream(
@@ -323,7 +322,6 @@ static void init_functions(void)
     X(MFCopyImage);
     X(MFCreateSourceResolver);
     X(MFCreateMFByteStreamOnStream);
-    X(MFCreateMemoryBuffer);
     X(MFHeapAlloc);
     X(MFHeapFree);
     X(MFPutWaitingWorkItem);
@@ -333,10 +331,13 @@ static void init_functions(void)
     is_win8_plus = pMFPutWaitingWorkItem != NULL;
 }
 
-static void test_MFCreateMediaType(void)
+static void test_media_type(void)
 {
+    IMFMediaType *mediatype, *mediatype2;
+    BOOL compressed;
+    DWORD flags;
     HRESULT hr;
-    IMFMediaType *mediatype;
+    GUID guid;
 
 if(0)
 {
@@ -348,9 +349,77 @@ if(0)
     hr = MFCreateMediaType(&mediatype);
     ok(hr == S_OK, "got 0x%08x\n", hr);
 
-    hr = IMFMediaType_SetGUID(mediatype, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
-    todo_wine ok(hr == S_OK, "got 0x%08x\n", hr);
+    hr = IMFMediaType_GetMajorType(mediatype, &guid);
+    ok(hr == MF_E_ATTRIBUTENOTFOUND, "Unexpected hr %#x.\n", hr);
 
+    compressed = FALSE;
+    hr = IMFMediaType_IsCompressedFormat(mediatype, &compressed);
+todo_wine
+    ok(hr == S_OK, "Failed to get media type property, hr %#x.\n", hr);
+    ok(compressed, "Unexpected value %d.\n", compressed);
+
+    hr = IMFMediaType_SetUINT32(mediatype, &MF_MT_ALL_SAMPLES_INDEPENDENT, 0);
+    ok(hr == S_OK, "Failed to set attribute, hr %#x.\n", hr);
+
+    compressed = FALSE;
+    hr = IMFMediaType_IsCompressedFormat(mediatype, &compressed);
+    ok(hr == S_OK, "Failed to get media type property, hr %#x.\n", hr);
+    ok(compressed, "Unexpected value %d.\n", compressed);
+
+    hr = IMFMediaType_SetUINT32(mediatype, &MF_MT_ALL_SAMPLES_INDEPENDENT, 1);
+    ok(hr == S_OK, "Failed to set attribute, hr %#x.\n", hr);
+
+    compressed = TRUE;
+    hr = IMFMediaType_IsCompressedFormat(mediatype, &compressed);
+    ok(hr == S_OK, "Failed to get media type property, hr %#x.\n", hr);
+    ok(!compressed, "Unexpected value %d.\n", compressed);
+
+    hr = IMFMediaType_SetGUID(mediatype, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
+    ok(hr == S_OK, "Failed to set GUID value, hr %#x.\n", hr);
+
+    hr = IMFMediaType_GetMajorType(mediatype, &guid);
+    ok(hr == S_OK, "Failed to get major type, hr %#x.\n", hr);
+    ok(IsEqualGUID(&guid, &MFMediaType_Video), "Unexpected major type.\n");
+
+    /* IsEqual() */
+    hr = MFCreateMediaType(&mediatype2);
+    ok(hr == S_OK, "Failed to create media type, hr %#x.\n", hr);
+
+    flags = 0xdeadbeef;
+    hr = IMFMediaType_IsEqual(mediatype, mediatype2, &flags);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+    ok(flags == 0, "Unexpected flags %#x.\n", flags);
+
+    /* Different major types. */
+    hr = IMFMediaType_SetGUID(mediatype2, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "Failed to set major type, hr %#x.\n", hr);
+
+    flags = 0;
+    hr = IMFMediaType_IsEqual(mediatype, mediatype2, &flags);
+    ok(hr == S_FALSE, "Unexpected hr %#x.\n", hr);
+    ok(flags == (MF_MEDIATYPE_EQUAL_FORMAT_TYPES | MF_MEDIATYPE_EQUAL_FORMAT_USER_DATA),
+            "Unexpected flags %#x.\n", flags);
+
+    /* Same major types, different subtypes. */
+    hr = IMFMediaType_SetGUID(mediatype2, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
+    ok(hr == S_OK, "Failed to set major type, hr %#x.\n", hr);
+
+    flags = 0;
+    hr = IMFMediaType_IsEqual(mediatype, mediatype2, &flags);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+    ok(flags == (MF_MEDIATYPE_EQUAL_MAJOR_TYPES | MF_MEDIATYPE_EQUAL_FORMAT_TYPES | MF_MEDIATYPE_EQUAL_FORMAT_DATA
+            | MF_MEDIATYPE_EQUAL_FORMAT_USER_DATA), "Unexpected flags %#x.\n", flags);
+
+    hr = IMFMediaType_SetGUID(mediatype, &MF_MT_SUBTYPE, &MFVideoFormat_RGB32);
+    ok(hr == S_OK, "Failed to set subtype, hr %#x.\n", hr);
+
+    flags = 0;
+    hr = IMFMediaType_IsEqual(mediatype, mediatype2, &flags);
+    ok(hr == S_FALSE, "Unexpected hr %#x.\n", hr);
+    ok(flags == (MF_MEDIATYPE_EQUAL_MAJOR_TYPES | MF_MEDIATYPE_EQUAL_FORMAT_DATA | MF_MEDIATYPE_EQUAL_FORMAT_USER_DATA),
+            "Unexpected flags %#x.\n", flags);
+
+    IMFMediaType_Release(mediatype2);
     IMFMediaType_Release(mediatype);
 }
 
@@ -418,28 +487,519 @@ static void test_MFCreateMediaEvent(void)
     IMFMediaEvent_Release(mediaevent);
 }
 
-static void test_MFCreateAttributes(void)
+#define CHECK_ATTR_COUNT(obj, expected) check_attr_count(obj, expected, __LINE__)
+static void check_attr_count(IMFAttributes* obj, UINT32 expected, int line)
 {
-    IMFAttributes *attributes;
+    UINT32 count = expected + 1;
+    HRESULT hr = IMFAttributes_GetCount(obj, &count);
+    ok_(__FILE__, line)(hr == S_OK, "Failed to get attributes count, hr %#x.\n", hr);
+    ok_(__FILE__, line)(count == expected, "Unexpected count %u, expected %u.\n", count, expected);
+}
+
+#define CHECK_ATTR_TYPE(obj, key, expected) check_attr_type(obj, key, expected, __LINE__)
+static void check_attr_type(IMFAttributes *obj, const GUID *key, MF_ATTRIBUTE_TYPE expected, int line)
+{
+    MF_ATTRIBUTE_TYPE type;
     HRESULT hr;
-    UINT32 count;
+
+    hr = IMFAttributes_GetItemType(obj, key, &type);
+    ok_(__FILE__, line)(hr == S_OK, "Failed to get item type, hr %#x.\n", hr);
+    ok_(__FILE__, line)(type == expected, "Unexpected item type %d, expected %d.\n", type, expected);
+}
+
+static void test_attributes(void)
+{
+    static const WCHAR stringW[] = {'W','i','n','e',0};
+    static const UINT8 blob[] = {0,1,2,3,4,5};
+    IMFAttributes *attributes, *attributes1;
+    UINT8 blob_value[256], *blob_buf = NULL;
+    MF_ATTRIBUTES_MATCH_TYPE match_type;
+    UINT32 value, string_length, size;
+    PROPVARIANT propvar, ret_propvar;
+    MF_ATTRIBUTE_TYPE type;
+    double double_value;
+    IUnknown *unk_value;
+    WCHAR bufferW[256];
+    UINT64 value64;
+    WCHAR *string;
+    BOOL result;
+    HRESULT hr;
+    GUID key;
 
     hr = MFCreateAttributes( &attributes, 3 );
     ok(hr == S_OK, "got 0x%08x\n", hr);
 
-    count = 88;
-    hr = IMFAttributes_GetCount(attributes, &count);
-    todo_wine ok(hr == S_OK, "got 0x%08x\n", hr);
-    ok(count == 0, "got %d\n", count);
+    hr = IMFAttributes_GetItemType(attributes, &GUID_NULL, &type);
+    ok(hr == MF_E_ATTRIBUTENOTFOUND, "Unexpected hr %#x.\n", hr);
 
-    hr = IMFAttributes_SetUINT32(attributes, &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 0);
-    todo_wine ok(hr == S_OK, "got 0x%08x\n", hr);
+    CHECK_ATTR_COUNT(attributes, 0);
+    hr = IMFAttributes_SetUINT32(attributes, &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 123);
+    ok(hr == S_OK, "Failed to set UINT32 value, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 1);
+    CHECK_ATTR_TYPE(attributes, &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_ATTRIBUTE_UINT32);
 
-    hr = IMFAttributes_GetCount(attributes, &count);
-    todo_wine ok(hr == S_OK, "got 0x%08x\n", hr);
-    todo_wine ok(count == 1, "got %d\n", count);
+    value = 0xdeadbeef;
+    hr = IMFAttributes_GetUINT32(attributes, &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, &value);
+    ok(hr == S_OK, "Failed to get UINT32 value, hr %#x.\n", hr);
+    ok(value == 123, "Unexpected value %u, expected: 123.\n", value);
+
+    value64 = 0xdeadbeef;
+    hr = IMFAttributes_GetUINT64(attributes, &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, &value64);
+    ok(hr == MF_E_INVALIDTYPE, "Unexpected hr %#x.\n", hr);
+    ok(value64 == 0xdeadbeef, "Unexpected value.\n");
+
+    hr = IMFAttributes_SetUINT64(attributes, &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 65536);
+    ok(hr == S_OK, "Failed to set UINT64 value, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 1);
+    CHECK_ATTR_TYPE(attributes, &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, MF_ATTRIBUTE_UINT64);
+
+    hr = IMFAttributes_GetUINT64(attributes, &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, &value64);
+    ok(hr == S_OK, "Failed to get UINT64 value, hr %#x.\n", hr);
+    ok(value64 == 65536, "Unexpected value.\n");
+
+    value = 0xdeadbeef;
+    hr = IMFAttributes_GetUINT32(attributes, &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, &value);
+    ok(hr == MF_E_INVALIDTYPE, "Unexpected hr %#x.\n", hr);
+    ok(value == 0xdeadbeef, "Unexpected value.\n");
 
     IMFAttributes_Release(attributes);
+
+    hr = MFCreateAttributes(&attributes, 0);
+    ok(hr == S_OK, "Failed to create attributes object, hr %#x.\n", hr);
+
+    PropVariantInit(&propvar);
+    propvar.vt = MF_ATTRIBUTE_UINT32;
+    U(propvar).ulVal = 123;
+    hr = IMFAttributes_SetItem(attributes, &DUMMY_GUID1, &propvar);
+    ok(hr == S_OK, "Failed to set item, hr %#x.\n", hr);
+    PropVariantInit(&ret_propvar);
+    ret_propvar.vt = MF_ATTRIBUTE_UINT32;
+    U(ret_propvar).ulVal = 0xdeadbeef;
+    hr = IMFAttributes_GetItem(attributes, &DUMMY_GUID1, &ret_propvar);
+    ok(hr == S_OK, "Failed to get item, hr %#x.\n", hr);
+    ok(!PropVariantCompareEx(&propvar, &ret_propvar, 0, 0), "Unexpected item value.\n");
+    PropVariantClear(&ret_propvar);
+    CHECK_ATTR_COUNT(attributes, 1);
+
+    PropVariantInit(&ret_propvar);
+    ret_propvar.vt = MF_ATTRIBUTE_STRING;
+    U(ret_propvar).pwszVal = NULL;
+    hr = IMFAttributes_GetItem(attributes, &DUMMY_GUID1, &ret_propvar);
+    ok(hr == S_OK, "Failed to get item, hr %#x.\n", hr);
+    ok(!PropVariantCompareEx(&propvar, &ret_propvar, 0, 0), "Unexpected item value.\n");
+    PropVariantClear(&ret_propvar);
+
+    PropVariantClear(&propvar);
+
+    PropVariantInit(&propvar);
+    propvar.vt = MF_ATTRIBUTE_UINT64;
+    U(propvar).uhVal.QuadPart = 65536;
+    hr = IMFAttributes_SetItem(attributes, &DUMMY_GUID1, &propvar);
+    ok(hr == S_OK, "Failed to set item, hr %#x.\n", hr);
+    PropVariantInit(&ret_propvar);
+    ret_propvar.vt = MF_ATTRIBUTE_UINT32;
+    U(ret_propvar).ulVal = 0xdeadbeef;
+    hr = IMFAttributes_GetItem(attributes, &DUMMY_GUID1, &ret_propvar);
+    ok(hr == S_OK, "Failed to get item, hr %#x.\n", hr);
+    ok(!PropVariantCompareEx(&propvar, &ret_propvar, 0, 0), "Unexpected item value.\n");
+    PropVariantClear(&ret_propvar);
+    PropVariantClear(&propvar);
+    CHECK_ATTR_COUNT(attributes, 1);
+
+    PropVariantInit(&propvar);
+    propvar.vt = VT_I4;
+    U(propvar).lVal = 123;
+    hr = IMFAttributes_SetItem(attributes, &DUMMY_GUID2, &propvar);
+    ok(hr == MF_E_INVALIDTYPE, "Failed to set item, hr %#x.\n", hr);
+    PropVariantInit(&ret_propvar);
+    ret_propvar.vt = MF_ATTRIBUTE_UINT32;
+    U(ret_propvar).lVal = 0xdeadbeef;
+    hr = IMFAttributes_GetItem(attributes, &DUMMY_GUID2, &ret_propvar);
+    ok(hr == S_OK, "Failed to get item, hr %#x.\n", hr);
+    PropVariantClear(&propvar);
+    ok(!PropVariantCompareEx(&propvar, &ret_propvar, 0, 0), "Unexpected item value.\n");
+    PropVariantClear(&ret_propvar);
+
+    PropVariantInit(&propvar);
+    propvar.vt = MF_ATTRIBUTE_UINT32;
+    U(propvar).ulVal = 123;
+    hr = IMFAttributes_SetItem(attributes, &DUMMY_GUID3, &propvar);
+    ok(hr == S_OK, "Failed to set item, hr %#x.\n", hr);
+
+    hr = IMFAttributes_DeleteItem(attributes, &DUMMY_GUID2);
+    ok(hr == S_OK, "Failed to delete item, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 2);
+
+    hr = IMFAttributes_DeleteItem(attributes, &DUMMY_GUID2);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 2);
+
+    hr = IMFAttributes_GetItem(attributes, &DUMMY_GUID3, &ret_propvar);
+    ok(hr == S_OK, "Failed to get item, hr %#x.\n", hr);
+    ok(!PropVariantCompareEx(&propvar, &ret_propvar, 0, 0), "Unexpected item value.\n");
+    PropVariantClear(&ret_propvar);
+    PropVariantClear(&propvar);
+
+    propvar.vt = MF_ATTRIBUTE_UINT64;
+    U(propvar).uhVal.QuadPart = 65536;
+
+    hr = IMFAttributes_GetItem(attributes, &DUMMY_GUID1, &ret_propvar);
+    ok(hr == S_OK, "Failed to get item, hr %#x.\n", hr);
+    ok(!PropVariantCompareEx(&propvar, &ret_propvar, 0, 0), "Unexpected item value.\n");
+    PropVariantClear(&ret_propvar);
+    PropVariantClear(&propvar);
+
+    /* Item ordering is not consistent across Windows version. */
+    hr = IMFAttributes_GetItemByIndex(attributes, 0, &key, &ret_propvar);
+    ok(hr == S_OK, "Failed to get item, hr %#x.\n", hr);
+    PropVariantClear(&ret_propvar);
+
+    hr = IMFAttributes_GetItemByIndex(attributes, 100, &key, &ret_propvar);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+    PropVariantClear(&ret_propvar);
+
+    hr = IMFAttributes_SetDouble(attributes, &GUID_NULL, 22.0);
+    ok(hr == S_OK, "Failed to set double value, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 3);
+    CHECK_ATTR_TYPE(attributes, &GUID_NULL, MF_ATTRIBUTE_DOUBLE);
+
+    double_value = 0xdeadbeef;
+    hr = IMFAttributes_GetDouble(attributes, &GUID_NULL, &double_value);
+    ok(hr == S_OK, "Failed to get double value, hr %#x.\n", hr);
+    ok(double_value == 22.0, "Unexpected value: %f, expected: 22.0.\n", double_value);
+
+    propvar.vt = MF_ATTRIBUTE_UINT64;
+    U(propvar).uhVal.QuadPart = 22;
+    hr = IMFAttributes_CompareItem(attributes, &GUID_NULL, &propvar, &result);
+    ok(hr == S_OK, "Failed to compare items, hr %#x.\n", hr);
+    ok(!result, "Unexpected result.\n");
+
+    propvar.vt = MF_ATTRIBUTE_DOUBLE;
+    U(propvar).dblVal = 22.0;
+    hr = IMFAttributes_CompareItem(attributes, &GUID_NULL, &propvar, &result);
+    ok(hr == S_OK, "Failed to compare items, hr %#x.\n", hr);
+    ok(result, "Unexpected result.\n");
+
+    hr = IMFAttributes_SetString(attributes, &DUMMY_GUID1, stringW);
+    ok(hr == S_OK, "Failed to set string attribute, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 3);
+    CHECK_ATTR_TYPE(attributes, &DUMMY_GUID1, MF_ATTRIBUTE_STRING);
+
+    hr = IMFAttributes_GetStringLength(attributes, &DUMMY_GUID1, &string_length);
+    ok(hr == S_OK, "Failed to get string length, hr %#x.\n", hr);
+    ok(string_length == lstrlenW(stringW), "Unexpected length %u.\n", string_length);
+
+    string_length = 0xdeadbeef;
+    hr = IMFAttributes_GetAllocatedString(attributes, &DUMMY_GUID1, &string, &string_length);
+    ok(hr == S_OK, "Failed to get allocated string, hr %#x.\n", hr);
+    ok(!lstrcmpW(string, stringW), "Unexpected string %s.\n", wine_dbgstr_w(string));
+    ok(string_length == lstrlenW(stringW), "Unexpected length %u.\n", string_length);
+    CoTaskMemFree(string);
+
+    string_length = 0xdeadbeef;
+    hr = IMFAttributes_GetString(attributes, &DUMMY_GUID1, bufferW, ARRAY_SIZE(bufferW), &string_length);
+    ok(hr == S_OK, "Failed to get string value, hr %#x.\n", hr);
+    ok(!lstrcmpW(bufferW, stringW), "Unexpected string %s.\n", wine_dbgstr_w(bufferW));
+    ok(string_length == lstrlenW(stringW), "Unexpected length %u.\n", string_length);
+    memset(bufferW, 0, sizeof(bufferW));
+
+    hr = IMFAttributes_GetString(attributes, &DUMMY_GUID1, bufferW, ARRAY_SIZE(bufferW), NULL);
+    ok(hr == S_OK, "Failed to get string value, hr %#x.\n", hr);
+    ok(!lstrcmpW(bufferW, stringW), "Unexpected string %s.\n", wine_dbgstr_w(bufferW));
+    memset(bufferW, 0, sizeof(bufferW));
+
+    string_length = 0;
+    hr = IMFAttributes_GetString(attributes, &DUMMY_GUID1, bufferW, 1, &string_length);
+    ok(hr == STRSAFE_E_INSUFFICIENT_BUFFER, "Unexpected hr %#x.\n", hr);
+    ok(!bufferW[0], "Unexpected string %s.\n", wine_dbgstr_w(bufferW));
+    ok(string_length, "Unexpected length.\n");
+
+    string_length = 0xdeadbeef;
+    hr = IMFAttributes_GetStringLength(attributes, &GUID_NULL, &string_length);
+    ok(hr == MF_E_INVALIDTYPE, "Unexpected hr %#x.\n", hr);
+    ok(string_length == 0xdeadbeef, "Unexpected length %u.\n", string_length);
+
+    /* VT_UNKNOWN */
+    hr = IMFAttributes_SetUnknown(attributes, &DUMMY_GUID2, (IUnknown *)attributes);
+    ok(hr == S_OK, "Failed to set value, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 4);
+    CHECK_ATTR_TYPE(attributes, &DUMMY_GUID2, MF_ATTRIBUTE_IUNKNOWN);
+
+    hr = IMFAttributes_GetUnknown(attributes, &DUMMY_GUID2, &IID_IUnknown, (void **)&unk_value);
+    ok(hr == S_OK, "Failed to get value, hr %#x.\n", hr);
+    IUnknown_Release(unk_value);
+
+    hr = IMFAttributes_GetUnknown(attributes, &DUMMY_GUID2, &IID_IMFAttributes, (void **)&unk_value);
+    ok(hr == S_OK, "Failed to get value, hr %#x.\n", hr);
+    IUnknown_Release(unk_value);
+
+    hr = IMFAttributes_GetUnknown(attributes, &DUMMY_GUID2, &IID_IStream, (void **)&unk_value);
+    ok(hr == E_NOINTERFACE, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFAttributes_SetUnknown(attributes, &DUMMY_CLSID, NULL);
+    ok(hr == S_OK, "Failed to set value, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 5);
+
+    unk_value = NULL;
+    hr = IMFAttributes_GetUnknown(attributes, &DUMMY_CLSID, &IID_IUnknown, (void **)&unk_value);
+    ok(hr == MF_E_INVALIDTYPE, "Unexpected hr %#x.\n", hr);
+
+    /* CopyAllItems() */
+    hr = MFCreateAttributes(&attributes1, 0);
+    ok(hr == S_OK, "Failed to create attributes object, hr %#x.\n", hr);
+    hr = IMFAttributes_CopyAllItems(attributes, attributes1);
+    ok(hr == S_OK, "Failed to copy items, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 5);
+    CHECK_ATTR_COUNT(attributes1, 5);
+
+    hr = IMFAttributes_DeleteAllItems(attributes1);
+    ok(hr == S_OK, "Failed to delete items, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes1, 0);
+
+    propvar.vt = MF_ATTRIBUTE_UINT64;
+    U(propvar).uhVal.QuadPart = 22;
+    hr = IMFAttributes_CompareItem(attributes, &GUID_NULL, &propvar, &result);
+    ok(hr == S_OK, "Failed to compare items, hr %#x.\n", hr);
+    ok(!result, "Unexpected result.\n");
+
+    hr = IMFAttributes_CopyAllItems(attributes1, attributes);
+    ok(hr == S_OK, "Failed to copy items, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 0);
+
+    /* Blob */
+    hr = IMFAttributes_SetBlob(attributes, &DUMMY_GUID1, blob, sizeof(blob));
+    ok(hr == S_OK, "Failed to set blob attribute, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 1);
+    CHECK_ATTR_TYPE(attributes, &DUMMY_GUID1, MF_ATTRIBUTE_BLOB);
+    hr = IMFAttributes_GetBlobSize(attributes, &DUMMY_GUID1, &size);
+    ok(hr == S_OK, "Failed to get blob size, hr %#x.\n", hr);
+    ok(size == sizeof(blob), "Unexpected blob size %u.\n", size);
+
+    hr = IMFAttributes_GetBlobSize(attributes, &DUMMY_GUID2, &size);
+    ok(hr == MF_E_ATTRIBUTENOTFOUND, "Unexpected hr %#x.\n", hr);
+
+    size = 0;
+    hr = IMFAttributes_GetBlob(attributes, &DUMMY_GUID1, blob_value, sizeof(blob_value), &size);
+    ok(hr == S_OK, "Failed to get blob, hr %#x.\n", hr);
+    ok(size == sizeof(blob), "Unexpected blob size %u.\n", size);
+    ok(!memcmp(blob_value, blob, size), "Unexpected blob.\n");
+
+    hr = IMFAttributes_GetBlob(attributes, &DUMMY_GUID2, blob_value, sizeof(blob_value), &size);
+    ok(hr == MF_E_ATTRIBUTENOTFOUND, "Unexpected hr %#x.\n", hr);
+
+    memset(blob_value, 0, sizeof(blob_value));
+    size = 0;
+    hr = IMFAttributes_GetAllocatedBlob(attributes, &DUMMY_GUID1, &blob_buf, &size);
+    ok(hr == S_OK, "Failed to get allocated blob, hr %#x.\n", hr);
+    ok(size == sizeof(blob), "Unexpected blob size %u.\n", size);
+    ok(!memcmp(blob_buf, blob, size), "Unexpected blob.\n");
+    CoTaskMemFree(blob_buf);
+
+    hr = IMFAttributes_GetAllocatedBlob(attributes, &DUMMY_GUID2, &blob_buf, &size);
+    ok(hr == MF_E_ATTRIBUTENOTFOUND, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFAttributes_GetBlob(attributes, &DUMMY_GUID1, blob_value, sizeof(blob) - 1, NULL);
+    ok(hr == E_NOT_SUFFICIENT_BUFFER, "Unexpected hr %#x.\n", hr);
+
+    IMFAttributes_Release(attributes);
+    IMFAttributes_Release(attributes1);
+
+    /* Compare() */
+    hr = MFCreateAttributes(&attributes, 0);
+    ok(hr == S_OK, "Failed to create attributes object, hr %#x.\n", hr);
+    hr = MFCreateAttributes(&attributes1, 0);
+    ok(hr == S_OK, "Failed to create attributes object, hr %#x.\n", hr);
+
+    hr = IMFAttributes_Compare(attributes, attributes, MF_ATTRIBUTES_MATCH_SMALLER + 1, &result);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    for (match_type = MF_ATTRIBUTES_MATCH_OUR_ITEMS; match_type <= MF_ATTRIBUTES_MATCH_SMALLER; ++match_type)
+    {
+        result = FALSE;
+        hr = IMFAttributes_Compare(attributes, attributes, match_type, &result);
+        ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+        ok(result, "Unexpected result %d.\n", result);
+
+        result = FALSE;
+        hr = IMFAttributes_Compare(attributes, attributes1, match_type, &result);
+        ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+        ok(result, "Unexpected result %d.\n", result);
+    }
+
+    hr = IMFAttributes_SetUINT32(attributes, &DUMMY_GUID1, 1);
+    ok(hr == S_OK, "Failed to set value, hr %#x.\n", hr);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_OUR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_ALL_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_INTERSECTION, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_SMALLER, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    hr = IMFAttributes_SetUINT32(attributes1, &DUMMY_GUID1, 2);
+    ok(hr == S_OK, "Failed to set value, hr %#x.\n", hr);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_ALL_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_OUR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_THEIR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_INTERSECTION, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_SMALLER, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_ALL_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_OUR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_THEIR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_INTERSECTION, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_SMALLER, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    hr = IMFAttributes_SetUINT32(attributes1, &DUMMY_GUID1, 1);
+    ok(hr == S_OK, "Failed to set value, hr %#x.\n", hr);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_ALL_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_THEIR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_INTERSECTION, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_SMALLER, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_ALL_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_THEIR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_INTERSECTION, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_SMALLER, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    hr = IMFAttributes_SetUINT32(attributes1, &DUMMY_GUID2, 2);
+    ok(hr == S_OK, "Failed to set value, hr %#x.\n", hr);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_ALL_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_THEIR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_OUR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_INTERSECTION, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes, attributes1, MF_ATTRIBUTES_MATCH_SMALLER, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_ALL_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_THEIR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = TRUE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_OUR_ITEMS, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(!result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_INTERSECTION, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    result = FALSE;
+    hr = IMFAttributes_Compare(attributes1, attributes, MF_ATTRIBUTES_MATCH_SMALLER, &result);
+    ok(hr == S_OK, "Failed to compare, hr %#x.\n", hr);
+    ok(result, "Unexpected result %d.\n", result);
+
+    IMFAttributes_Release(attributes);
+    IMFAttributes_Release(attributes1);
 }
 
 static void test_MFCreateMFByteStreamOnStream(void)
@@ -486,7 +1046,7 @@ static void test_MFCreateMFByteStreamOnStream(void)
 
     if (hr != S_OK)
     {
-        win_skip("Can not retrieve IMFAttributes interface from IMFByteStream\n");
+        win_skip("Cannot retrieve IMFAttributes interface from IMFByteStream\n");
         IStream_Release(stream);
         IMFByteStream_Release(bytestream);
         return;
@@ -602,23 +1162,17 @@ static void test_MFCreateFile(void)
     DeleteFileW(newfilename);
 }
 
-static void test_MFCreateMemoryBuffer(void)
+static void test_system_memory_buffer(void)
 {
     IMFMediaBuffer *buffer;
     HRESULT hr;
     DWORD length, max;
     BYTE *data, *data2;
 
-    if(!pMFCreateMemoryBuffer)
-    {
-        win_skip("MFCreateMemoryBuffer() not found\n");
-        return;
-    }
-
-    hr = pMFCreateMemoryBuffer(1024, NULL);
+    hr = MFCreateMemoryBuffer(1024, NULL);
     ok(hr == E_INVALIDARG || hr == E_POINTER, "got 0x%08x\n", hr);
 
-    hr = pMFCreateMemoryBuffer(0, &buffer);
+    hr = MFCreateMemoryBuffer(0, &buffer);
     ok(hr == S_OK, "got 0x%08x\n", hr);
     if(buffer)
     {
@@ -629,7 +1183,7 @@ static void test_MFCreateMemoryBuffer(void)
         IMFMediaBuffer_Release(buffer);
     }
 
-    hr = pMFCreateMemoryBuffer(1024, &buffer);
+    hr = MFCreateMemoryBuffer(1024, &buffer);
     ok(hr == S_OK, "got 0x%08x\n", hr);
 
     hr = IMFMediaBuffer_GetMaxLength(buffer, NULL);
@@ -686,21 +1240,150 @@ static void test_MFCreateMemoryBuffer(void)
     ok(hr == S_OK, "got 0x%08x\n", hr);
 
     IMFMediaBuffer_Release(buffer);
+
+    /* Aligned buffer. */
+    hr = MFCreateAlignedMemoryBuffer(201, MF_8_BYTE_ALIGNMENT, &buffer);
+    ok(hr == S_OK, "Failed to create memory buffer, hr %#x.\n", hr);
+
+    hr = IMFMediaBuffer_GetCurrentLength(buffer, &length);
+    ok(hr == S_OK, "Failed to get current length, hr %#x.\n", hr);
+    ok(length == 0, "Unexpected current length %u.\n", length);
+
+    hr = IMFMediaBuffer_SetCurrentLength(buffer, 1);
+    ok(hr == S_OK, "Failed to set current length, hr %#x.\n", hr);
+    hr = IMFMediaBuffer_GetCurrentLength(buffer, &length);
+    ok(hr == S_OK, "Failed to get current length, hr %#x.\n", hr);
+    ok(length == 1, "Unexpected current length %u.\n", length);
+
+    hr = IMFMediaBuffer_GetMaxLength(buffer, &length);
+    ok(hr == S_OK, "Failed to get max length, hr %#x.\n", hr);
+    ok(length == 201, "Unexpected max length %u.\n", length);
+
+    hr = IMFMediaBuffer_SetCurrentLength(buffer, 202);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+    hr = IMFMediaBuffer_GetMaxLength(buffer, &length);
+    ok(hr == S_OK, "Failed to get max length, hr %#x.\n", hr);
+    ok(length == 201, "Unexpected max length %u.\n", length);
+    hr = IMFMediaBuffer_SetCurrentLength(buffer, 10);
+    ok(hr == S_OK, "Failed to set current length, hr %#x.\n", hr);
+
+    hr = IMFMediaBuffer_Lock(buffer, &data, &max, &length);
+    ok(hr == S_OK, "Failed to lock, hr %#x.\n", hr);
+    ok(max == 201 && length == 10, "Unexpected length.\n");
+    hr = IMFMediaBuffer_Unlock(buffer);
+    ok(hr == S_OK, "Failed to unlock, hr %#x.\n", hr);
+
+    IMFMediaBuffer_Release(buffer);
 }
 
-static void test_MFSample(void)
+static void test_sample(void)
 {
+    IMFMediaBuffer *buffer, *buffer2;
+    DWORD count, flags, length;
+    IMFAttributes *attributes;
     IMFSample *sample;
+    LONGLONG time;
     HRESULT hr;
-    UINT32 count;
 
     hr = MFCreateSample( &sample );
     ok(hr == S_OK, "got 0x%08x\n", hr);
+
+    hr = IMFSample_QueryInterface(sample, &IID_IMFAttributes, (void **)&attributes);
+    ok(hr == S_OK, "Failed to get attributes interface, hr %#x.\n", hr);
+
+    CHECK_ATTR_COUNT(attributes, 0);
+
+    hr = IMFSample_GetBufferCount(sample, NULL);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
 
     hr = IMFSample_GetBufferCount(sample, &count);
     ok(hr == S_OK, "got 0x%08x\n", hr);
     ok(count == 0, "got %d\n", count);
 
+    hr = IMFSample_GetSampleFlags(sample, &flags);
+    ok(hr == S_OK, "Failed to get sample flags, hr %#x.\n", hr);
+    ok(!flags, "Unexpected flags %#x.\n", flags);
+
+    hr = IMFSample_SetSampleFlags(sample, 0x123);
+    ok(hr == S_OK, "Failed to set sample flags, hr %#x.\n", hr);
+    hr = IMFSample_GetSampleFlags(sample, &flags);
+    ok(hr == S_OK, "Failed to get sample flags, hr %#x.\n", hr);
+    ok(flags == 0x123, "Unexpected flags %#x.\n", flags);
+
+    hr = IMFSample_GetSampleTime(sample, &time);
+    ok(hr == MF_E_NO_SAMPLE_TIMESTAMP, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFSample_GetSampleDuration(sample, &time);
+    ok(hr == MF_E_NO_SAMPLE_DURATION, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFSample_GetBufferByIndex(sample, 0, &buffer);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFSample_RemoveBufferByIndex(sample, 0);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFSample_RemoveAllBuffers(sample);
+    ok(hr == S_OK, "Failed to remove all, hr %#x.\n", hr);
+
+    hr = IMFSample_GetTotalLength(sample, &length);
+    ok(hr == S_OK, "Failed to get total length, hr %#x.\n", hr);
+    ok(!length, "Unexpected total length %u.\n", length);
+
+    hr = MFCreateMemoryBuffer(16, &buffer);
+    ok(hr == S_OK, "Failed to create buffer, hr %#x.\n", hr);
+
+    hr = IMFSample_AddBuffer(sample, buffer);
+    ok(hr == S_OK, "Failed to add buffer, hr %#x.\n", hr);
+
+    hr = IMFSample_AddBuffer(sample, buffer);
+    ok(hr == S_OK, "Failed to add buffer, hr %#x.\n", hr);
+
+    hr = IMFSample_GetBufferCount(sample, &count);
+    ok(hr == S_OK, "Failed to get buffer count, hr %#x.\n", hr);
+    ok(count == 2, "Unexpected buffer count %u.\n", count);
+
+    hr = IMFSample_GetBufferByIndex(sample, 0, &buffer2);
+    ok(hr == S_OK, "Failed to get buffer, hr %#x.\n", hr);
+    ok(buffer2 == buffer, "Unexpected object.\n");
+    IMFMediaBuffer_Release(buffer2);
+
+    hr = IMFSample_GetTotalLength(sample, &length);
+    ok(hr == S_OK, "Failed to get total length, hr %#x.\n", hr);
+    ok(!length, "Unexpected total length %u.\n", length);
+
+    hr = IMFMediaBuffer_SetCurrentLength(buffer, 2);
+    ok(hr == S_OK, "Failed to set current length, hr %#x.\n", hr);
+
+    hr = IMFSample_GetTotalLength(sample, &length);
+    ok(hr == S_OK, "Failed to get total length, hr %#x.\n", hr);
+    ok(length == 4, "Unexpected total length %u.\n", length);
+
+    hr = IMFSample_RemoveBufferByIndex(sample, 1);
+    ok(hr == S_OK, "Failed to remove buffer, hr %#x.\n", hr);
+
+    hr = IMFSample_GetTotalLength(sample, &length);
+    ok(hr == S_OK, "Failed to get total length, hr %#x.\n", hr);
+    ok(length == 2, "Unexpected total length %u.\n", length);
+
+    IMFMediaBuffer_Release(buffer);
+
+    /* Duration */
+    hr = IMFSample_SetSampleDuration(sample, 10);
+    ok(hr == S_OK, "Failed to set duration, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 0);
+    hr = IMFSample_GetSampleDuration(sample, &time);
+    ok(hr == S_OK, "Failed to get sample duration, hr %#x.\n", hr);
+    ok(time == 10, "Unexpected duration.\n");
+
+    /* Timestamp */
+    hr = IMFSample_SetSampleTime(sample, 1);
+    ok(hr == S_OK, "Failed to set timestamp, hr %#x.\n", hr);
+    CHECK_ATTR_COUNT(attributes, 0);
+    hr = IMFSample_GetSampleTime(sample, &time);
+    ok(hr == S_OK, "Failed to get sample time, hr %#x.\n", hr);
+    ok(time == 1, "Unexpected timestamp.\n");
+
+    IMFAttributes_Release(attributes);
     IMFSample_Release(sample);
 }
 
@@ -766,18 +1449,18 @@ static HRESULT WINAPI testcallback_Invoke(IMFAsyncCallback *iface, IMFAsyncResul
 
             hr = IMFMediaEventQueue_GetEvent(queue, 0, &event);
             ok(hr == MF_E_MULTIPLE_SUBSCRIBERS, "Failed to get event, hr %#x.\n", hr);
-        }
 
-        hr = IMFMediaEventQueue_EndGetEvent(queue, result, &event);
-        ok(hr == S_OK, "Failed to finalize GetEvent, hr %#x.\n", hr);
+            hr = IMFMediaEventQueue_EndGetEvent(queue, result, &event);
+            ok(hr == S_OK, "Failed to finalize GetEvent, hr %#x.\n", hr);
+
+            hr = IMFMediaEventQueue_EndGetEvent(queue, result, &event);
+            ok(hr == E_FAIL, "Unexpected result, hr %#x.\n", hr);
+
+            IMFMediaEvent_Release(event);
+        }
 
         hr = IMFAsyncResult_GetObject(result, &obj);
         ok(hr == E_POINTER, "Unexpected hr %#x.\n", hr);
-
-        IMFMediaEvent_Release(event);
-
-        hr = IMFMediaEventQueue_EndGetEvent(queue, result, &event);
-        ok(hr == E_FAIL, "Unexpected result, hr %#x.\n", hr);
 
         IMFMediaEventQueue_Release(queue);
 
@@ -809,7 +1492,10 @@ static void test_MFCreateAsyncResult(void)
     IUnknown *state, *object;
     MFASYNCRESULT *data;
     ULONG refcount;
+    HANDLE event;
+    DWORD flags;
     HRESULT hr;
+    BOOL ret;
 
     init_test_callback(&callback);
 
@@ -893,9 +1579,38 @@ static void test_MFCreateAsyncResult(void)
     ok(state == (IUnknown *)result, "Unexpected state.\n");
 
     refcount = IMFAsyncResult_Release(result2);
-    ok(!refcount, "Unexpected refcount %u\n.", refcount);
+    ok(!refcount, "Unexpected refcount %u.\n", refcount);
     refcount = IMFAsyncResult_Release(result);
-    ok(!refcount, "Unexpected refcount %u\n.", refcount);
+    ok(!refcount, "Unexpected refcount %u.\n", refcount);
+
+    /* Event handle is closed on release. */
+    hr = MFCreateAsyncResult(NULL, NULL, NULL, &result);
+    ok(hr == S_OK, "Failed to create object, hr %#x.\n", hr);
+
+    data = (MFASYNCRESULT *)result;
+    data->hEvent = event = CreateEventA(NULL, FALSE, FALSE, NULL);
+    ok(data->hEvent != NULL, "Failed to create event.\n");
+    ret = GetHandleInformation(event, &flags);
+    ok(ret, "Failed to get handle info.\n");
+
+    refcount = IMFAsyncResult_Release(result);
+    ok(!refcount, "Unexpected refcount %u.\n", refcount);
+    ret = GetHandleInformation(event, &flags);
+    ok(!ret, "Expected handle to be closed.\n");
+
+    hr = MFCreateAsyncResult(NULL, &callback.IMFAsyncCallback_iface, NULL, &result);
+    ok(hr == S_OK, "Failed to create object, hr %#x.\n", hr);
+
+    data = (MFASYNCRESULT *)result;
+    data->hEvent = event = CreateEventA(NULL, FALSE, FALSE, NULL);
+    ok(data->hEvent != NULL, "Failed to create event.\n");
+    ret = GetHandleInformation(event, &flags);
+    ok(ret, "Failed to get handle info.\n");
+
+    refcount = IMFAsyncResult_Release(result);
+    ok(!refcount, "Unexpected refcount %u.\n", refcount);
+    ret = GetHandleInformation(event, &flags);
+    ok(!ret, "Expected handle to be closed.\n");
 }
 
 static void test_startup(void)
@@ -1429,6 +2144,209 @@ static void test_event_queue(void)
     ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
 }
 
+static void test_presentation_descriptor(void)
+{
+    IMFStreamDescriptor *stream_desc[2], *stream_desc2;
+    IMFPresentationDescriptor *pd, *pd2;
+    IMFMediaType *media_type;
+    unsigned int i;
+    BOOL selected;
+    DWORD count;
+    HRESULT hr;
+
+    hr = MFCreateMediaType(&media_type);
+    ok(hr == S_OK, "Failed to create media type, hr %#x.\n", hr);
+
+    for (i = 0; i < ARRAY_SIZE(stream_desc); ++i)
+    {
+        hr = MFCreateStreamDescriptor(0, 1, &media_type, &stream_desc[i]);
+        ok(hr == S_OK, "Failed to create descriptor, hr %#x.\n", hr);
+    }
+
+    hr = MFCreatePresentationDescriptor(ARRAY_SIZE(stream_desc), stream_desc, &pd);
+    ok(hr == S_OK, "Failed to create presentation descriptor, hr %#x.\n", hr);
+
+    hr = IMFPresentationDescriptor_GetStreamDescriptorCount(pd, &count);
+    ok(count == ARRAY_SIZE(stream_desc), "Unexpected count %u.\n", count);
+
+    for (i = 0; i < count; ++i)
+    {
+        hr = IMFPresentationDescriptor_GetStreamDescriptorByIndex(pd, i, &selected, &stream_desc2);
+        ok(hr == S_OK, "Failed to get stream descriptor, hr %#x.\n", hr);
+        ok(!selected, "Unexpected selected state.\n");
+        ok(stream_desc[i] == stream_desc2, "Unexpected object.\n");
+        IMFStreamDescriptor_Release(stream_desc2);
+    }
+
+    hr = IMFPresentationDescriptor_GetStreamDescriptorByIndex(pd, 10, &selected, &stream_desc2);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFPresentationDescriptor_SelectStream(pd, 10);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFPresentationDescriptor_SelectStream(pd, 0);
+    ok(hr == S_OK, "Failed to select a stream, hr %#x.\n", hr);
+
+    hr = IMFPresentationDescriptor_GetStreamDescriptorByIndex(pd, 0, &selected, &stream_desc2);
+    ok(hr == S_OK, "Failed to get stream descriptor, hr %#x.\n", hr);
+    ok(!!selected, "Unexpected selected state.\n");
+    IMFStreamDescriptor_Release(stream_desc2);
+
+    hr = IMFPresentationDescriptor_Clone(pd, &pd2);
+    ok(hr == S_OK, "Failed to clone, hr %#x.\n", hr);
+
+    hr = IMFPresentationDescriptor_GetStreamDescriptorByIndex(pd2, 0, &selected, &stream_desc2);
+    ok(hr == S_OK, "Failed to get stream descriptor, hr %#x.\n", hr);
+    ok(!!selected, "Unexpected selected state.\n");
+    IMFStreamDescriptor_Release(stream_desc2);
+
+    IMFPresentationDescriptor_Release(pd);
+
+    for (i = 0; i < ARRAY_SIZE(stream_desc); ++i)
+    {
+        IMFStreamDescriptor_Release(stream_desc[i]);
+    }
+
+    /* Partially initialized array. */
+    hr = MFCreateStreamDescriptor(0, 1, &media_type, &stream_desc[1]);
+    ok(hr == S_OK, "Failed to create descriptor, hr %#x.\n", hr);
+    stream_desc[0] = NULL;
+
+    hr = MFCreatePresentationDescriptor(ARRAY_SIZE(stream_desc), stream_desc, &pd);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    IMFStreamDescriptor_Release(stream_desc[1]);
+    IMFMediaType_Release(media_type);
+}
+
+enum clock_action
+{
+    CLOCK_START,
+    CLOCK_STOP,
+    CLOCK_PAUSE,
+    CLOCK_RESTART,
+};
+
+static void test_system_time_source(void)
+{
+    static const struct clock_state_test
+    {
+        enum clock_action action;
+        MFCLOCK_STATE state;
+        BOOL is_invalid;
+    }
+    clock_state_change[] =
+    {
+        { CLOCK_STOP, MFCLOCK_STATE_INVALID },
+        { CLOCK_RESTART, MFCLOCK_STATE_INVALID, TRUE },
+        { CLOCK_PAUSE, MFCLOCK_STATE_PAUSED },
+        { CLOCK_PAUSE, MFCLOCK_STATE_PAUSED, TRUE },
+        { CLOCK_STOP, MFCLOCK_STATE_STOPPED },
+        { CLOCK_STOP, MFCLOCK_STATE_STOPPED },
+        { CLOCK_RESTART, MFCLOCK_STATE_STOPPED, TRUE },
+        { CLOCK_START, MFCLOCK_STATE_RUNNING },
+        { CLOCK_START, MFCLOCK_STATE_RUNNING },
+        { CLOCK_RESTART, MFCLOCK_STATE_RUNNING, TRUE },
+        { CLOCK_PAUSE, MFCLOCK_STATE_PAUSED },
+        { CLOCK_START, MFCLOCK_STATE_RUNNING },
+        { CLOCK_PAUSE, MFCLOCK_STATE_PAUSED },
+        { CLOCK_RESTART, MFCLOCK_STATE_RUNNING },
+        { CLOCK_RESTART, MFCLOCK_STATE_RUNNING, TRUE },
+        { CLOCK_STOP, MFCLOCK_STATE_STOPPED },
+        { CLOCK_PAUSE, MFCLOCK_STATE_STOPPED, TRUE },
+    };
+    IMFPresentationTimeSource *time_source;
+    IMFClockStateSink *statesink;
+    MFCLOCK_STATE state;
+    unsigned int i;
+    DWORD value;
+    HRESULT hr;
+
+    hr = MFCreateSystemTimeSource(&time_source);
+    ok(hr == S_OK, "Failed to create time source, hr %#x.\n", hr);
+
+    hr = IMFPresentationTimeSource_GetClockCharacteristics(time_source, &value);
+    ok(hr == S_OK, "Failed to get flags, hr %#x.\n", hr);
+    ok(value == (MFCLOCK_CHARACTERISTICS_FLAG_FREQUENCY_10MHZ | MFCLOCK_CHARACTERISTICS_FLAG_IS_SYSTEM_CLOCK),
+            "Unexpected flags %#x.\n", value);
+
+    value = 1;
+    hr = IMFPresentationTimeSource_GetContinuityKey(time_source, &value);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+    ok(value == 0, "Unexpected value %u.\n", value);
+
+    hr = IMFPresentationTimeSource_GetState(time_source, 0, &state);
+    ok(hr == S_OK, "Failed to get state, hr %#x.\n", hr);
+    ok(state == MFCLOCK_STATE_INVALID, "Unexpected state %d.\n", state);
+
+    hr = IMFPresentationTimeSource_QueryInterface(time_source, &IID_IMFClockStateSink, (void **)&statesink);
+    ok(hr == S_OK, "Failed to get state sink, hr %#x.\n", hr);
+
+    /* State changes. */
+    for (i = 0; i < ARRAY_SIZE(clock_state_change); ++i)
+    {
+        switch (clock_state_change[i].action)
+        {
+            case CLOCK_STOP:
+                hr = IMFClockStateSink_OnClockStop(statesink, 0);
+                break;
+            case CLOCK_RESTART:
+                hr = IMFClockStateSink_OnClockRestart(statesink, 0);
+                break;
+            case CLOCK_PAUSE:
+                hr = IMFClockStateSink_OnClockPause(statesink, 0);
+                break;
+            case CLOCK_START:
+                hr = IMFClockStateSink_OnClockStart(statesink, 0, 0);
+                break;
+            default:
+                ;
+        }
+        ok(hr == (clock_state_change[i].is_invalid ? MF_E_INVALIDREQUEST : S_OK), "%u: unexpected hr %#x.\n", i, hr);
+        hr = IMFPresentationTimeSource_GetState(time_source, 0, &state);
+        ok(hr == S_OK, "%u: failed to get state, hr %#x.\n", i, hr);
+        ok(state == clock_state_change[i].state, "%u: unexpected state %d.\n", i, state);
+    }
+
+    IMFClockStateSink_Release(statesink);
+
+    IMFPresentationTimeSource_Release(time_source);
+}
+
+static void test_MFInvokeCallback(void)
+{
+    struct test_callback callback;
+    IMFAsyncResult *result;
+    MFASYNCRESULT *data;
+    ULONG refcount;
+    HRESULT hr;
+    DWORD ret;
+
+    hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+    ok(hr == S_OK, "Failed to start up, hr %#x.\n", hr);
+
+    init_test_callback(&callback);
+
+    hr = MFCreateAsyncResult(NULL, &callback.IMFAsyncCallback_iface, NULL, &result);
+    ok(hr == S_OK, "Failed to create object, hr %#x.\n", hr);
+
+    data = (MFASYNCRESULT *)result;
+    data->hEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
+    ok(data->hEvent != NULL, "Failed to create event.\n");
+
+    hr = MFInvokeCallback(result);
+    ok(hr == S_OK, "Failed to invoke, hr %#x.\n", hr);
+
+    ret = WaitForSingleObject(data->hEvent, 100);
+    ok(ret == WAIT_TIMEOUT, "Expected timeout, ret %#x.\n", ret);
+
+    refcount = IMFAsyncResult_Release(result);
+    ok(!refcount, "Unexpected refcount %u.\n", refcount);
+
+    hr = MFShutdown();
+    ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
+}
+
 START_TEST(mfplat)
 {
     CoInitialize(NULL);
@@ -1437,13 +2355,13 @@ START_TEST(mfplat)
 
     test_startup();
     test_register();
-    test_MFCreateMediaType();
+    test_media_type();
     test_MFCreateMediaEvent();
-    test_MFCreateAttributes();
-    test_MFSample();
+    test_attributes();
+    test_sample();
     test_MFCreateFile();
     test_MFCreateMFByteStreamOnStream();
-    test_MFCreateMemoryBuffer();
+    test_system_memory_buffer();
     test_source_resolver();
     test_MFCreateAsyncResult();
     test_allocate_queue();
@@ -1454,6 +2372,9 @@ START_TEST(mfplat)
     test_serial_queue();
     test_periodic_callback();
     test_event_queue();
+    test_presentation_descriptor();
+    test_system_time_source();
+    test_MFInvokeCallback();
 
     CoUninitialize();
 }

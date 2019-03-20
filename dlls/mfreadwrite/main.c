@@ -21,21 +21,22 @@
 #include <stdarg.h>
 
 #define COBJMACROS
+#define NONAMELESSUNION
 
 #include "windef.h"
 #include "winbase.h"
-#include "initguid.h"
 #include "ole2.h"
 #include "rpcproxy.h"
+
+#undef INITGUID
+#include <guiddef.h>
+#include "mfapi.h"
+#include "mferror.h"
 #include "mfidl.h"
 #include "mfreadwrite.h"
 
 #include "wine/debug.h"
 #include "wine/heap.h"
-
-DEFINE_GUID(CLSID_MFReadWriteClassFactory, 0x48e2ed0f, 0x98c2, 0x4a37, 0xbe, 0xd5, 0x16, 0x63, 0x12, 0xdd, 0xd8, 0x3f);
-DEFINE_GUID(CLSID_MFSourceReader, 0x1777133c, 0x0881, 0x411b, 0xa5, 0x77, 0xad, 0x54, 0x5f, 0x07, 0x14, 0xc4);
-DEFINE_GUID(CLSID_MFSinkWriter, 0xa3bbfb17, 0x8273, 0x4e52, 0x9e, 0x0e, 0x97, 0x39, 0xdc, 0x88, 0x79, 0x90);
 
 WINE_DEFAULT_DEBUG_CHANNEL(mfplat);
 
@@ -71,10 +72,15 @@ HRESULT WINAPI DllUnregisterServer(void)
     return __wine_unregister_resources( mfinstance );
 }
 
-typedef struct _srcreader
+typedef struct source_reader
 {
     IMFSourceReader IMFSourceReader_iface;
-    LONG ref;
+    IMFAsyncCallback source_events_callback;
+    LONG refcount;
+    IMFMediaSource *source;
+    IMFPresentationDescriptor *descriptor;
+    DWORD first_audio_stream_index;
+    DWORD first_video_stream_index;
 } srcreader;
 
 struct sink_writer
@@ -88,10 +94,87 @@ static inline srcreader *impl_from_IMFSourceReader(IMFSourceReader *iface)
     return CONTAINING_RECORD(iface, srcreader, IMFSourceReader_iface);
 }
 
+static struct source_reader *impl_from_source_callback_IMFAsyncCallback(IMFAsyncCallback *iface)
+{
+    return CONTAINING_RECORD(iface, struct source_reader, source_events_callback);
+}
+
 static inline struct sink_writer *impl_from_IMFSinkWriter(IMFSinkWriter *iface)
 {
     return CONTAINING_RECORD(iface, struct sink_writer, IMFSinkWriter_iface);
 }
+
+static HRESULT WINAPI source_reader_source_events_callback_QueryInterface(IMFAsyncCallback *iface,
+        REFIID riid, void **obj)
+{
+    TRACE("%p, %s, %p.\n", iface, debugstr_guid(riid), obj);
+
+    if (IsEqualIID(riid, &IID_IMFAsyncCallback) ||
+            IsEqualIID(riid, &IID_IUnknown))
+    {
+        *obj = iface;
+        IMFAsyncCallback_AddRef(iface);
+        return S_OK;
+    }
+
+    WARN("Unsupported %s.\n", debugstr_guid(riid));
+    *obj = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI source_reader_source_events_callback_AddRef(IMFAsyncCallback *iface)
+{
+    struct source_reader *reader = impl_from_source_callback_IMFAsyncCallback(iface);
+    return IMFSourceReader_AddRef(&reader->IMFSourceReader_iface);
+}
+
+static ULONG WINAPI source_reader_source_events_callback_Release(IMFAsyncCallback *iface)
+{
+    struct source_reader *reader = impl_from_source_callback_IMFAsyncCallback(iface);
+    return IMFSourceReader_Release(&reader->IMFSourceReader_iface);
+}
+
+static HRESULT WINAPI source_reader_source_events_callback_GetParameters(IMFAsyncCallback *iface,
+        DWORD *flags, DWORD *queue)
+{
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI source_reader_source_events_callback_Invoke(IMFAsyncCallback *iface, IMFAsyncResult *result)
+{
+    struct source_reader *reader = impl_from_source_callback_IMFAsyncCallback(iface);
+    MediaEventType event_type;
+    IMFMediaSource *source;
+    IMFMediaEvent *event;
+    HRESULT hr;
+
+    TRACE("%p, %p.\n", iface, result);
+
+    source = (IMFMediaSource *)IMFAsyncResult_GetStateNoAddRef(result);
+
+    if (FAILED(hr = IMFMediaSource_EndGetEvent(source, result, &event)))
+        return hr;
+
+    IMFMediaEvent_GetType(event, &event_type);
+
+    TRACE("Got event %u.\n", event_type);
+
+    IMFMediaEvent_Release(event);
+
+    IMFMediaSource_BeginGetEvent(source, &reader->source_events_callback,
+        (IUnknown *)source);
+
+    return S_OK;
+}
+
+static const IMFAsyncCallbackVtbl source_events_callback_vtbl =
+{
+    source_reader_source_events_callback_QueryInterface,
+    source_reader_source_events_callback_AddRef,
+    source_reader_source_events_callback_Release,
+    source_reader_source_events_callback_GetParameters,
+    source_reader_source_events_callback_Invoke,
+};
 
 static HRESULT WINAPI src_reader_QueryInterface(IMFSourceReader *iface, REFIID riid, void **out)
 {
@@ -118,7 +201,7 @@ static HRESULT WINAPI src_reader_QueryInterface(IMFSourceReader *iface, REFIID r
 static ULONG WINAPI src_reader_AddRef(IMFSourceReader *iface)
 {
     srcreader *This = impl_from_IMFSourceReader(iface);
-    ULONG ref = InterlockedIncrement(&This->ref);
+    ULONG ref = InterlockedIncrement(&This->refcount);
 
     TRACE("(%p) ref=%u\n", This, ref);
 
@@ -127,39 +210,131 @@ static ULONG WINAPI src_reader_AddRef(IMFSourceReader *iface)
 
 static ULONG WINAPI src_reader_Release(IMFSourceReader *iface)
 {
-    srcreader *This = impl_from_IMFSourceReader(iface);
-    ULONG ref = InterlockedDecrement(&This->ref);
+    struct source_reader *reader = impl_from_IMFSourceReader(iface);
+    ULONG refcount = InterlockedDecrement(&reader->refcount);
 
-    TRACE("(%p) ref=%u\n", This, ref);
+    TRACE("%p, refcount %d.\n", iface, refcount);
 
-    if (!ref)
+    if (!refcount)
     {
-        HeapFree(GetProcessHeap(), 0, This);
+        IMFMediaSource_Shutdown(reader->source);
+        if (reader->descriptor)
+            IMFPresentationDescriptor_Release(reader->descriptor);
+        IMFMediaSource_Release(reader->source);
+        heap_free(reader);
     }
 
-    return ref;
+    return refcount;
 }
 
 static HRESULT WINAPI src_reader_GetStreamSelection(IMFSourceReader *iface, DWORD index, BOOL *selected)
 {
-    srcreader *This = impl_from_IMFSourceReader(iface);
-    FIXME("%p, 0x%08x, %p\n", This, index, selected);
-    return E_NOTIMPL;
+    struct source_reader *reader = impl_from_IMFSourceReader(iface);
+    IMFStreamDescriptor *sd;
+
+    TRACE("%p, %#x, %p.\n", iface, index, selected);
+
+    switch (index)
+    {
+        case MF_SOURCE_READER_FIRST_VIDEO_STREAM:
+            index = reader->first_video_stream_index;
+            break;
+        case MF_SOURCE_READER_FIRST_AUDIO_STREAM:
+            index = reader->first_audio_stream_index;
+            break;
+        default:
+            ;
+    }
+
+    if (FAILED(IMFPresentationDescriptor_GetStreamDescriptorByIndex(reader->descriptor, index, selected, &sd)))
+        return MF_E_INVALIDSTREAMNUMBER;
+    IMFStreamDescriptor_Release(sd);
+
+    return S_OK;
 }
 
 static HRESULT WINAPI src_reader_SetStreamSelection(IMFSourceReader *iface, DWORD index, BOOL selected)
 {
-    srcreader *This = impl_from_IMFSourceReader(iface);
-    FIXME("%p, 0x%08x, %d\n", This, index, selected);
-    return E_NOTIMPL;
+    struct source_reader *reader = impl_from_IMFSourceReader(iface);
+    unsigned int count;
+    HRESULT hr;
+
+    TRACE("%p, %#x, %d.\n", iface, index, selected);
+
+    switch (index)
+    {
+        case MF_SOURCE_READER_FIRST_VIDEO_STREAM:
+            index = reader->first_video_stream_index;
+            break;
+        case MF_SOURCE_READER_FIRST_AUDIO_STREAM:
+            index = reader->first_audio_stream_index;
+            break;
+        case MF_SOURCE_READER_ALL_STREAMS:
+            if (FAILED(hr = IMFPresentationDescriptor_GetStreamDescriptorCount(reader->descriptor, &count)))
+                return hr;
+
+            for (index = 0; index < count; ++index)
+            {
+                if (selected)
+                    IMFPresentationDescriptor_SelectStream(reader->descriptor, index);
+                else
+                    IMFPresentationDescriptor_DeselectStream(reader->descriptor, index);
+            }
+
+            return S_OK;
+        default:
+            ;
+    }
+
+    if (selected)
+        hr = IMFPresentationDescriptor_SelectStream(reader->descriptor, index);
+    else
+        hr = IMFPresentationDescriptor_DeselectStream(reader->descriptor, index);
+
+    if (FAILED(hr))
+        return MF_E_INVALIDSTREAMNUMBER;
+
+    return S_OK;
 }
 
-static HRESULT WINAPI src_reader_GetNativeMediaType(IMFSourceReader *iface, DWORD index, DWORD typeindex,
+static HRESULT WINAPI src_reader_GetNativeMediaType(IMFSourceReader *iface, DWORD index, DWORD type_index,
             IMFMediaType **type)
 {
-    srcreader *This = impl_from_IMFSourceReader(iface);
-    FIXME("%p, 0x%08x, %d, %p\n", This, index, typeindex, type);
-    return E_NOTIMPL;
+    struct source_reader *reader = impl_from_IMFSourceReader(iface);
+    IMFMediaTypeHandler *handler;
+    IMFStreamDescriptor *sd;
+    BOOL selected;
+    HRESULT hr;
+
+    TRACE("%p, %#x, %#x, %p.\n", iface, index, type_index, type);
+
+    switch (index)
+    {
+        case MF_SOURCE_READER_FIRST_VIDEO_STREAM:
+            index = reader->first_video_stream_index;
+            break;
+        case MF_SOURCE_READER_FIRST_AUDIO_STREAM:
+            index = reader->first_audio_stream_index;
+            break;
+        default:
+            ;
+    }
+
+    if (FAILED(IMFPresentationDescriptor_GetStreamDescriptorByIndex(reader->descriptor, index, &selected, &sd)))
+        return MF_E_INVALIDSTREAMNUMBER;
+
+    hr = IMFStreamDescriptor_GetMediaTypeHandler(sd, &handler);
+    IMFStreamDescriptor_Release(sd);
+    if (FAILED(hr))
+        return hr;
+
+    if (type_index == MF_SOURCE_READER_CURRENT_TYPE_INDEX)
+        hr = IMFMediaTypeHandler_GetCurrentMediaType(handler, type);
+    else
+        hr = IMFMediaTypeHandler_GetMediaTypeByIndex(handler, type_index, type);
+    IMFMediaTypeHandler_Release(handler);
+
+    return hr;
 }
 
 static HRESULT WINAPI src_reader_GetCurrentMediaType(IMFSourceReader *iface, DWORD index, IMFMediaType **type)
@@ -204,16 +379,73 @@ static HRESULT WINAPI src_reader_Flush(IMFSourceReader *iface, DWORD index)
 static HRESULT WINAPI src_reader_GetServiceForStream(IMFSourceReader *iface, DWORD index, REFGUID service,
         REFIID riid, void **object)
 {
-    srcreader *This = impl_from_IMFSourceReader(iface);
-    FIXME("%p, 0x%08x, %s, %s, %p\n", This, index, debugstr_guid(service), debugstr_guid(riid), object);
-    return E_NOTIMPL;
+    struct source_reader *reader = impl_from_IMFSourceReader(iface);
+    IUnknown *obj = NULL;
+    HRESULT hr;
+
+    TRACE("%p, %#x, %s, %s, %p\n", iface, index, debugstr_guid(service), debugstr_guid(riid), object);
+
+    switch (index)
+    {
+        case MF_SOURCE_READER_MEDIASOURCE:
+            obj = (IUnknown *)reader->source;
+            break;
+        default:
+            FIXME("Unsupported index %#x.\n", index);
+            return E_NOTIMPL;
+    }
+
+    if (IsEqualGUID(service, &GUID_NULL))
+    {
+        hr = IUnknown_QueryInterface(obj, riid, object);
+    }
+    else
+    {
+        IMFGetService *gs;
+
+        hr = IUnknown_QueryInterface(obj, &IID_IMFGetService, (void **)&gs);
+        if (SUCCEEDED(hr))
+        {
+            hr = IMFGetService_GetService(gs, service, riid, object);
+            IMFGetService_Release(gs);
+        }
+    }
+
+    return hr;
 }
 
 static HRESULT WINAPI src_reader_GetPresentationAttribute(IMFSourceReader *iface, DWORD index,
-        REFGUID guid, PROPVARIANT *attr)
+        REFGUID guid, PROPVARIANT *value)
 {
-    srcreader *This = impl_from_IMFSourceReader(iface);
-    FIXME("%p, 0x%08x, %s, %p\n", This, index, debugstr_guid(guid), attr);
+    struct source_reader *reader = impl_from_IMFSourceReader(iface);
+    HRESULT hr;
+
+    TRACE("%p, %#x, %s, %p.\n", iface, index, debugstr_guid(guid), value);
+
+    switch (index)
+    {
+        case MF_SOURCE_READER_MEDIASOURCE:
+            if (IsEqualGUID(guid, &MF_SOURCE_READER_MEDIASOURCE_CHARACTERISTICS))
+            {
+                DWORD flags;
+
+                if (FAILED(hr = IMFMediaSource_GetCharacteristics(reader->source, &flags)))
+                    return hr;
+
+                value->vt = VT_UI4;
+                value->u.ulVal = flags;
+                return S_OK;
+            }
+            else
+            {
+                return IMFPresentationDescriptor_GetItem(reader->descriptor, guid, value);
+            }
+            break;
+        default:
+            FIXME("Unsupported index %#x.\n", index);
+            return E_NOTIMPL;
+    }
+
     return E_NOTIMPL;
 }
 
@@ -234,20 +466,78 @@ struct IMFSourceReaderVtbl srcreader_vtbl =
     src_reader_GetPresentationAttribute
 };
 
+static DWORD reader_get_first_stream_index(IMFPresentationDescriptor *descriptor, const GUID *major)
+{
+    unsigned int count, i;
+    BOOL selected;
+    HRESULT hr;
+    GUID guid;
+
+    if (FAILED(IMFPresentationDescriptor_GetStreamDescriptorCount(descriptor, &count)))
+        return MF_SOURCE_READER_INVALID_STREAM_INDEX;
+
+    for (i = 0; i < count; ++i)
+    {
+        IMFMediaTypeHandler *handler;
+        IMFStreamDescriptor *sd;
+
+        if (SUCCEEDED(IMFPresentationDescriptor_GetStreamDescriptorByIndex(descriptor, i, &selected, &sd)))
+        {
+            hr = IMFStreamDescriptor_GetMediaTypeHandler(sd, &handler);
+            IMFStreamDescriptor_Release(sd);
+            if (SUCCEEDED(hr))
+            {
+                hr = IMFMediaTypeHandler_GetMajorType(handler, &guid);
+                IMFMediaTypeHandler_Release(handler);
+                if (SUCCEEDED(hr) && IsEqualGUID(&guid, major))
+                {
+                    return i;
+                }
+            }
+        }
+    }
+
+    return MF_SOURCE_READER_INVALID_STREAM_INDEX;
+}
+
 static HRESULT create_source_reader_from_source(IMFMediaSource *source, IMFAttributes *attributes,
         REFIID riid, void **out)
 {
     srcreader *object;
     HRESULT hr;
 
-    object = heap_alloc(sizeof(*object));
+    object = heap_alloc_zero(sizeof(*object));
     if (!object)
         return E_OUTOFMEMORY;
 
     object->IMFSourceReader_iface.lpVtbl = &srcreader_vtbl;
-    object->ref = 1;
+    object->source_events_callback.lpVtbl = &source_events_callback_vtbl;
+    object->refcount = 1;
+    object->source = source;
+    IMFMediaSource_AddRef(object->source);
+
+    if (FAILED(hr = IMFMediaSource_CreatePresentationDescriptor(object->source, &object->descriptor)))
+        goto failed;
+
+    /* At least one major type has to be set. */
+    object->first_audio_stream_index = reader_get_first_stream_index(object->descriptor, &MFMediaType_Audio);
+    object->first_video_stream_index = reader_get_first_stream_index(object->descriptor, &MFMediaType_Video);
+
+    if (object->first_audio_stream_index == MF_SOURCE_READER_INVALID_STREAM_INDEX &&
+            object->first_video_stream_index == MF_SOURCE_READER_INVALID_STREAM_INDEX)
+    {
+        hr = MF_E_ATTRIBUTENOTFOUND;
+    }
+
+    if (FAILED(hr = IMFMediaSource_BeginGetEvent(object->source, &object->source_events_callback,
+            (IUnknown *)object->source)))
+    {
+        goto failed;
+    }
 
     hr = IMFSourceReader_QueryInterface(&object->IMFSourceReader_iface, riid, out);
+
+failed:
     IMFSourceReader_Release(&object->IMFSourceReader_iface);
     return hr;
 }
@@ -255,9 +545,64 @@ static HRESULT create_source_reader_from_source(IMFMediaSource *source, IMFAttri
 static HRESULT create_source_reader_from_stream(IMFByteStream *stream, IMFAttributes *attributes,
         REFIID riid, void **out)
 {
-    /* FIXME: resolve bytestream to media source */
+    IMFSourceResolver *resolver;
+    MF_OBJECT_TYPE obj_type;
+    IMFMediaSource *source;
+    HRESULT hr;
 
-    return create_source_reader_from_source(NULL, attributes, riid, out);
+    if (FAILED(hr = MFCreateSourceResolver(&resolver)))
+        return hr;
+
+    hr = IMFSourceResolver_CreateObjectFromByteStream(resolver, stream, NULL, MF_RESOLUTION_MEDIASOURCE, NULL,
+            &obj_type, (IUnknown **)&source);
+    IMFSourceResolver_Release(resolver);
+    if (FAILED(hr))
+        return hr;
+
+    hr = create_source_reader_from_source(source, attributes, riid, out);
+    IMFMediaSource_Release(source);
+    return hr;
+}
+
+static HRESULT create_source_reader_from_url(const WCHAR *url, IMFAttributes *attributes, REFIID riid, void **out)
+{
+    IMFSourceResolver *resolver;
+    IUnknown *object = NULL;
+    MF_OBJECT_TYPE obj_type;
+    IMFMediaSource *source;
+    HRESULT hr;
+
+    if (FAILED(hr = MFCreateSourceResolver(&resolver)))
+        return hr;
+
+    hr = IMFSourceResolver_CreateObjectFromURL(resolver, url, MF_RESOLUTION_MEDIASOURCE, NULL, &obj_type,
+            &object);
+    if (SUCCEEDED(hr))
+    {
+        switch (obj_type)
+        {
+            case MF_OBJECT_BYTESTREAM:
+                hr = IMFSourceResolver_CreateObjectFromByteStream(resolver, (IMFByteStream *)object, NULL,
+                        MF_RESOLUTION_MEDIASOURCE, NULL, &obj_type, (IUnknown **)&source);
+                break;
+            case MF_OBJECT_MEDIASOURCE:
+                source = (IMFMediaSource *)object;
+                IMFMediaSource_AddRef(source);
+                break;
+            default:
+                WARN("Unknown object type %d.\n", obj_type);
+                hr = E_UNEXPECTED;
+        }
+        IUnknown_Release(object);
+    }
+
+    IMFSourceResolver_Release(resolver);
+    if (FAILED(hr))
+        return hr;
+
+    hr = create_source_reader_from_source(source, attributes, riid, out);
+    IMFMediaSource_Release(source);
+    return hr;
 }
 
 static HRESULT WINAPI sink_writer_QueryInterface(IMFSinkWriter *iface, REFIID riid, void **out)
@@ -467,6 +812,16 @@ HRESULT WINAPI MFCreateSourceReaderFromMediaSource(IMFMediaSource *source, IMFAt
     return create_source_reader_from_source(source, attributes, &IID_IMFSourceReader, (void **)reader);
 }
 
+/***********************************************************************
+ *      MFCreateSourceReaderFromURL (mfreadwrite.@)
+ */
+HRESULT WINAPI MFCreateSourceReaderFromURL(const WCHAR *url, IMFAttributes *attributes, IMFSourceReader **reader)
+{
+    TRACE("%s, %p, %p.\n", debugstr_w(url), attributes, reader);
+
+    return create_source_reader_from_url(url, attributes, &IID_IMFSourceReader, (void **)reader);
+}
+
 static HRESULT WINAPI readwrite_factory_QueryInterface(IMFReadWriteClassFactory *iface, REFIID riid, void **out)
 {
     if (IsEqualIID(riid, &IID_IMFReadWriteClassFactory) ||
@@ -495,7 +850,14 @@ static ULONG WINAPI readwrite_factory_Release(IMFReadWriteClassFactory *iface)
 static HRESULT WINAPI readwrite_factory_CreateInstanceFromURL(IMFReadWriteClassFactory *iface, REFCLSID clsid,
         const WCHAR *url, IMFAttributes *attributes, REFIID riid, void **out)
 {
-    FIXME("%s, %s, %p, %s, %p.\n", debugstr_guid(clsid), debugstr_w(url), attributes, debugstr_guid(riid), out);
+    TRACE("%s, %s, %p, %s, %p.\n", debugstr_guid(clsid), debugstr_w(url), attributes, debugstr_guid(riid), out);
+
+    if (IsEqualGUID(clsid, &CLSID_MFSourceReader))
+    {
+        return create_source_reader_from_url(url, attributes, &IID_IMFSourceReader, out);
+    }
+
+    FIXME("Unsupported %s.\n", debugstr_guid(clsid));
 
     return E_NOTIMPL;
 }

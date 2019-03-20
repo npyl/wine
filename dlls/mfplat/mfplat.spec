@@ -37,7 +37,7 @@
 @ stub MFConvertToFP16Array
 @ stdcall MFCopyImage(ptr long ptr long long long)
 @ stub MFCreateAMMediaTypeFromMFMediaType
-@ stub MFCreateAlignedMemoryBuffer
+@ stdcall MFCreateAlignedMemoryBuffer(long long ptr)
 @ stdcall MFCreateAsyncResult(ptr ptr ptr ptr)
 @ stdcall MFCreateAttributes(ptr long)
 @ stub MFCreateAudioMediaType
@@ -55,13 +55,13 @@
 @ stdcall MFCreateMemoryBuffer(long ptr)
 @ stub MFCreateMemoryStream
 @ stub MFCreatePathFromURL
-@ stub MFCreatePresentationDescriptor
+@ stdcall MFCreatePresentationDescriptor(long ptr ptr)
 @ stdcall MFCreateSample(ptr)
 @ stub MFCreateSocket
 @ stub MFCreateSocketListener
 @ stdcall MFCreateSourceResolver(ptr)
 @ stdcall MFCreateStreamDescriptor(long long ptr ptr)
-@ stub MFCreateSystemTimeSource
+@ stdcall MFCreateSystemTimeSource(ptr)
 @ stub MFCreateSystemUnderlyingClock
 @ stub MFCreateTempFile
 @ stub MFCreateTransformActivate
@@ -123,7 +123,9 @@
 @ stdcall MFLockWorkQueue(long)
 @ stdcall MFPutWaitingWorkItem(long long ptr ptr)
 @ stdcall MFPutWorkItem(long ptr ptr)
+@ stdcall MFPutWorkItem2(long long ptr ptr)
 @ stdcall MFPutWorkItemEx(long ptr)
+@ stdcall MFPutWorkItemEx2(long long ptr)
 @ stub MFRecordError
 @ stdcall MFRemovePeriodicCallback(long)
 @ stdcall MFScheduleWorkItem(ptr ptr int64 ptr)

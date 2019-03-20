@@ -1,0 +1,5 @@
+MODULE    = msidb.exe
+APPMODE   = -mconsole -municode
+IMPORTS   = msi shlwapi
+
+C_SRCS = main.c

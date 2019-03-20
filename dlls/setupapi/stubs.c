@@ -312,28 +312,6 @@ BOOL WINAPI SetupDiGetClassImageIndex(PSP_CLASSIMAGELIST_DATA ClassImageListData
 }
 
 /***********************************************************************
- *      SetupDiOpenDeviceInfoA (SETUPAPI.@)
- */
-BOOL WINAPI SetupDiOpenDeviceInfoA(HDEVINFO DeviceInfoSet, PCSTR DeviceInstanceId,
-        HWND hwndParent, DWORD OpenFlags, PSP_DEVINFO_DATA DeviceInfoData)
-{
-    FIXME("%p %s %p 0x%08x %p: stub\n", DeviceInfoSet, debugstr_a(DeviceInstanceId),
-          hwndParent, OpenFlags, DeviceInfoData);
-    return FALSE;
-}
-
-/***********************************************************************
- *      SetupDiOpenDeviceInfoW (SETUPAPI.@)
- */
-BOOL WINAPI SetupDiOpenDeviceInfoW(HDEVINFO DeviceInfoSet, PCWSTR DeviceInstanceId,
-        HWND hwndParent, DWORD OpenFlags, PSP_DEVINFO_DATA DeviceInfoData)
-{
-    FIXME("%p %s %p 0x%08x %p: stub\n", DeviceInfoSet, debugstr_w(DeviceInstanceId),
-          hwndParent, OpenFlags, DeviceInfoData);
-    return FALSE;
-}
-
-/***********************************************************************
  *      CM_Locate_DevNodeA (SETUPAPI.@)
  */
 CONFIGRET WINAPI CM_Locate_DevNodeA(PDEVINST pdnDevInst, DEVINSTID_A pDeviceID, ULONG ulFlags)
@@ -695,4 +673,22 @@ BOOL WINAPI SetupDiEnumDriverInfoW(HDEVINFO DeviceInfoSet, PSP_DEVINFO_DATA Devi
 
     SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
     return FALSE;
+}
+
+/***********************************************************************
+ *              CM_Request_Device_EjectA  (SETUPAPI.@)
+ */
+CONFIGRET WINAPI CM_Request_Device_EjectA(DEVINST dev, PPNP_VETO_TYPE type, LPSTR name, ULONG length, ULONG flags)
+{
+    FIXME("(0x%08x, %p, %p, %u, 0x%08x) stub\n", dev, type, name, length, flags);
+    return CR_SUCCESS;
+}
+
+/***********************************************************************
+ *              CM_Request_Device_EjectW  (SETUPAPI.@)
+ */
+CONFIGRET WINAPI CM_Request_Device_EjectW(DEVINST dev, PPNP_VETO_TYPE type, LPWSTR name, ULONG length, ULONG flags)
+{
+    FIXME("(0x%08x, %p, %p, %u, 0x%08x) stub\n", dev, type, name, length, flags);
+    return CR_SUCCESS;
 }

@@ -157,9 +157,9 @@ HRESULT CDECL wined3d_swapchain_present(struct wined3d_swapchain *swapchain,
 {
     RECT s, d;
 
-    TRACE("swapchain %p, src_rect %s, dst_rect %s, dst_window_override %p, flags %#x.\n",
+    TRACE("swapchain %p, src_rect %s, dst_rect %s, dst_window_override %p, swap_interval %u, flags %#x.\n",
             swapchain, wine_dbgstr_rect(src_rect), wine_dbgstr_rect(dst_rect),
-            dst_window_override, flags);
+            dst_window_override, swap_interval, flags);
 
     if (flags)
         FIXME("Ignoring flags %#x.\n", flags);
@@ -348,6 +348,27 @@ static void swapchain_blit(const struct wined3d_swapchain *swapchain,
     wined3d_texture_invalidate_location(texture, 0, WINED3D_LOCATION_DRAWABLE);
 }
 
+static void swapchain_gl_set_swap_interval(struct wined3d_swapchain *swapchain,
+        struct wined3d_context *context, unsigned int swap_interval)
+{
+    const struct wined3d_gl_info *gl_info = context->gl_info;
+
+    swap_interval = swap_interval <= 4 ? swap_interval : 1;
+    if (swapchain->swap_interval == swap_interval)
+        return;
+
+    swapchain->swap_interval = swap_interval;
+
+    if (!gl_info->supported[WGL_EXT_SWAP_CONTROL])
+        return;
+
+    if (!GL_EXTCALL(wglSwapIntervalEXT(swap_interval)))
+    {
+        ERR("Failed to set swap interval %u for context %p, last error %#x.\n",
+                swap_interval, context, GetLastError());
+    }
+}
+
 /* Context activation is done by the caller. */
 static void wined3d_swapchain_gl_rotate(struct wined3d_swapchain *swapchain, struct wined3d_context *context)
 {
@@ -396,7 +417,7 @@ static void wined3d_swapchain_gl_rotate(struct wined3d_swapchain *swapchain, str
 }
 
 static void swapchain_gl_present(struct wined3d_swapchain *swapchain,
-        const RECT *src_rect, const RECT *dst_rect, DWORD flags)
+        const RECT *src_rect, const RECT *dst_rect, unsigned int swap_interval, DWORD flags)
 {
     struct wined3d_texture *back_buffer = swapchain->back_buffers[0];
     const struct wined3d_fb_state *fb = &swapchain->device->cs->fb;
@@ -415,6 +436,8 @@ static void swapchain_gl_present(struct wined3d_swapchain *swapchain,
     }
 
     gl_info = context->gl_info;
+
+    swapchain_gl_set_swap_interval(swapchain, context, swap_interval);
 
     if ((logo_texture = swapchain->device->logo_texture))
     {
@@ -597,7 +620,7 @@ static void swapchain_gdi_frontbuffer_updated(struct wined3d_swapchain *swapchai
 }
 
 static void swapchain_gdi_present(struct wined3d_swapchain *swapchain,
-        const RECT *src_rect, const RECT *dst_rect, DWORD flags)
+        const RECT *src_rect, const RECT *dst_rect, unsigned int swap_interval, DWORD flags)
 {
     struct wined3d_dc_info *front, *back;
     HBITMAP bitmap;
@@ -689,31 +712,6 @@ static void wined3d_swapchain_apply_sample_count_override(const struct wined3d_s
     *quality = 0;
 }
 
-void wined3d_swapchain_set_swap_interval(struct wined3d_swapchain *swapchain,
-        unsigned int swap_interval)
-{
-    const struct wined3d_gl_info *gl_info;
-    struct wined3d_context *context;
-
-    swap_interval = swap_interval <= 4 ? swap_interval : 1;
-    if (swapchain->swap_interval == swap_interval)
-        return;
-
-    swapchain->swap_interval = swap_interval;
-
-    context = context_acquire(swapchain->device, swapchain->front_buffer, 0);
-    gl_info = context->gl_info;
-
-    if (gl_info->supported[WGL_EXT_SWAP_CONTROL])
-    {
-        if (!GL_EXTCALL(wglSwapIntervalEXT(swap_interval)))
-            ERR("wglSwapIntervalEXT failed to set swap interval %d for context %p, last error %#x.\n",
-                    swap_interval, context, GetLastError());
-    }
-
-    context_release(context);
-}
-
 static void wined3d_swapchain_cs_init(void *object)
 {
     struct wined3d_swapchain *swapchain = object;
@@ -760,6 +758,16 @@ void swapchain_set_max_frame_latency(struct wined3d_swapchain *swapchain, const 
 {
     /* Subtract 1 for the implicit OpenGL latency. */
     swapchain->max_frame_latency = device->max_frame_latency >= 2 ? device->max_frame_latency - 1 : 1;
+}
+
+static enum wined3d_format_id adapter_format_from_backbuffer_format(struct wined3d_swapchain *swapchain,
+        enum wined3d_format_id format_id)
+{
+    const struct wined3d_adapter *adapter = swapchain->device->adapter;
+    const struct wined3d_format *backbuffer_format;
+
+    backbuffer_format = wined3d_get_format(adapter, format_id, WINED3D_BIND_RENDER_TARGET);
+    return pixelformat_for_depth(backbuffer_format->byte_count * CHAR_BIT);
 }
 
 static HRESULT swapchain_init(struct wined3d_swapchain *swapchain, struct wined3d_device *device,
@@ -881,7 +889,8 @@ static HRESULT swapchain_init(struct wined3d_swapchain *swapchain, struct wined3
             /* Change the display settings */
             swapchain->d3d_mode.width = desc->backbuffer_width;
             swapchain->d3d_mode.height = desc->backbuffer_height;
-            swapchain->d3d_mode.format_id = desc->backbuffer_format;
+            swapchain->d3d_mode.format_id = adapter_format_from_backbuffer_format(swapchain,
+                    desc->backbuffer_format);
             swapchain->d3d_mode.refresh_rate = desc->refresh_rate;
             swapchain->d3d_mode.scanline_ordering = WINED3D_SCANLINE_ORDERING_UNKNOWN;
 
@@ -1414,7 +1423,8 @@ HRESULT CDECL wined3d_swapchain_set_fullscreen(struct wined3d_swapchain *swapcha
                 actual_mode.width = swapchain_desc->backbuffer_width;
                 actual_mode.height = swapchain_desc->backbuffer_height;
                 actual_mode.refresh_rate = swapchain_desc->refresh_rate;
-                actual_mode.format_id = swapchain_desc->backbuffer_format;
+                actual_mode.format_id = adapter_format_from_backbuffer_format(swapchain,
+                        swapchain_desc->backbuffer_format);
                 actual_mode.scanline_ordering = WINED3D_SCANLINE_ORDERING_UNKNOWN;
             }
             else

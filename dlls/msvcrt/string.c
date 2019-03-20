@@ -1094,11 +1094,11 @@ MSVCRT_long CDECL MSVCRT__atol_l(const char *str, MSVCRT__locale_t locale)
 {
     __int64 ret = MSVCRT_strtoi64_l(str, NULL, 10, locale);
 
-    if(ret > LONG_MAX) {
-        ret = LONG_MAX;
+    if(ret > MSVCRT_LONG_MAX) {
+        ret = MSVCRT_LONG_MAX;
         *MSVCRT__errno() = MSVCRT_ERANGE;
-    } else if(ret < LONG_MIN) {
-        ret = LONG_MIN;
+    } else if(ret < MSVCRT_LONG_MIN) {
+        ret = MSVCRT_LONG_MIN;
         *MSVCRT__errno() = MSVCRT_ERANGE;
     }
     return ret;
@@ -1109,7 +1109,11 @@ MSVCRT_long CDECL MSVCRT__atol_l(const char *str, MSVCRT__locale_t locale)
  */
 MSVCRT_long CDECL MSVCRT_atol(const char *str)
 {
+#if _MSVCR_VER == 0
+    return MSVCRT_atoi(str);
+#else
     return MSVCRT__atol_l(str, NULL);
+#endif
 }
 
 #if _MSVCR_VER>=120

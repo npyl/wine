@@ -119,6 +119,30 @@ function test_iframe() {
     });
 }
 
+function test_anchor() {
+    var iframe = document.body.firstChild;
+    var anchor = document.createElement("a");
+
+    var anchor_tests = [
+        { href: "http://www.winehq.org:123/about", protocol: "http:", host: "www.winehq.org:123" },
+        { href: "https://www.winehq.org:123/about", protocol: "https:", host: "www.winehq.org:123" },
+        { href: "about:blank", protocol: "about:", host: "" },
+        { href: "file:///c:/dir/file.html", protocol: "file:", host: "" },
+        { href: "http://www.winehq.org/about", protocol: "http:", host: "www.winehq.org:80", todo_host: true },
+        { href: "https://www.winehq.org/about", protocol: "https:", host: "www.winehq.org:443", todo_host: true },
+    ];
+
+    for(var i in anchor_tests) {
+        var t = anchor_tests[i];
+        anchor.href = t.href;
+        ok(anchor.protocol === t.protocol, "anchor(" + t.href + ").protocol = " + anchor.protocol);
+        todo_wine_if("todo_host" in t).
+        ok(anchor.host === t.host, "anchor(" + t.href + ").host = " + anchor.host);
+    }
+
+    next_test();
+}
+
 function test_getElementsByClassName() {
     var elems;
 
@@ -239,6 +263,30 @@ function test_style_properties() {
     ok(style.zIndex === 1, "zIndex = " + style.zIndex);
     ok(style["z-index"] === 1, "z-index = " + style["z-index"]);
 
+    style.setProperty("border-width", "5px");
+    ok(style.borderWidth === "5px", "style.borderWidth = " + style.borderWidth);
+
+    try {
+        style.setProperty("border-width", 6);
+        ok(style.borderWidth === "5px", "style.borderWidth = " + style.borderWidth);
+    }catch(e) {
+        win_skip("skipping setProperty tests on too old IE version");
+        next_test();
+        return;
+    }
+
+    style.setProperty("border-width", "7px", "test");
+    ok(style.borderWidth === "5px", "style.borderWidth = " + style.borderWidth);
+
+    style.setProperty("border-width", "6px", "");
+    ok(style.borderWidth === "6px", "style.borderWidth = " + style.borderWidth);
+
+    style.setProperty("border-width", "7px", "important");
+    ok(style.borderWidth === "7px", "style.borderWidth = " + style.borderWidth);
+
+    style.setProperty("border-width", "8px", undefined);
+    ok(style.borderWidth === "7px", "style.borderWidth = " + style.borderWidth);
+
     next_test();
 }
 
@@ -249,6 +297,7 @@ var tests = [
     test_getElementsByClassName,
     test_head,
     test_iframe,
+    test_anchor,
     test_query_selector,
     test_compare_position,
     test_document_owner,

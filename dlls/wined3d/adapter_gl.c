@@ -179,6 +179,7 @@ static const struct wined3d_extension_map gl_extension_map[] =
     {"GL_EXT_framebuffer_blit",             EXT_FRAMEBUFFER_BLIT          },
     {"GL_EXT_framebuffer_multisample",      EXT_FRAMEBUFFER_MULTISAMPLE   },
     {"GL_EXT_framebuffer_object",           EXT_FRAMEBUFFER_OBJECT        },
+    {"GL_EXT_memory_object",                EXT_MEMORY_OBJECT             },
     {"GL_EXT_gpu_program_parameters",       EXT_GPU_PROGRAM_PARAMETERS    },
     {"GL_EXT_gpu_shader4",                  EXT_GPU_SHADER4               },
     {"GL_EXT_packed_depth_stencil",         EXT_PACKED_DEPTH_STENCIL      },
@@ -1879,7 +1880,7 @@ card_vendor_table[] =
 };
 
 static enum wined3d_pci_device wined3d_guess_card(enum wined3d_feature_level feature_level,
-        DWORD glsl_version, const char *gl_renderer, enum wined3d_gl_vendor *gl_vendor,
+        const char *gl_renderer, enum wined3d_gl_vendor *gl_vendor,
         enum wined3d_pci_vendor *card_vendor)
 {
     /* A Direct3D device object contains the PCI id (vendor + device) of the
@@ -2499,6 +2500,9 @@ static void load_gl_funcs(struct wined3d_gl_info *gl_info)
     USE_GL_FUNC(glVertexAttribI4uivEXT)
     USE_GL_FUNC(glVertexAttribI4usvEXT)
     USE_GL_FUNC(glVertexAttribIPointerEXT)
+    /* GL_EXT_memory_object */
+    USE_GL_FUNC(glGetUnsignedBytei_vEXT)
+    USE_GL_FUNC(glGetUnsignedBytevEXT)
     /* GL_EXT_point_parameters */
     USE_GL_FUNC(glPointParameterfEXT)
     USE_GL_FUNC(glPointParameterfvEXT)
@@ -3737,6 +3741,7 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
             || gl_info->supported[ARB_TEXTURE_RECTANGLE];
 
     d3d_info->draw_base_vertex_offset = !!gl_info->supported[ARB_DRAW_ELEMENTS_BASE_VERTEX];
+    d3d_info->vertex_bgra = !!gl_info->supported[ARB_VERTEX_ARRAY_BGRA];
 
     if (gl_info->supported[ARB_TEXTURE_MULTISAMPLE])
         d3d_info->multisample_draw_location = WINED3D_LOCATION_TEXTURE_RGB;
@@ -3852,8 +3857,7 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
         vendor = wined3d_guess_card_vendor(gl_vendor_str, gl_renderer_str);
         TRACE("Guessed vendor PCI ID 0x%04x.\n", vendor);
 
-        device = wined3d_guess_card(d3d_info->feature_level, gl_info->glsl_version,
-                gl_renderer_str, &gl_vendor, &vendor);
+        device = wined3d_guess_card(d3d_info->feature_level, gl_renderer_str, &gl_vendor, &vendor);
         TRACE("Guessed device PCI ID 0x%04x.\n", device);
 
         if (!(gpu_description = wined3d_get_gpu_description(vendor, device)))
@@ -3870,6 +3874,28 @@ static BOOL wined3d_adapter_init_gl_caps(struct wined3d_adapter *adapter,
 
     adapter->vram_bytes_used = 0;
     TRACE("Emulating 0x%s bytes of video ram.\n", wine_dbgstr_longlong(driver_info->vram_bytes));
+
+    if (gl_info->supported[EXT_MEMORY_OBJECT])
+    {
+        GLint device_count = 0;
+
+        gl_info->gl_ops.gl.p_glGetIntegerv(GL_NUM_DEVICE_UUIDS_EXT, &device_count);
+        if (device_count > 0)
+        {
+            if (device_count > 1)
+                FIXME("A set of %d devices is not supported.\n", device_count);
+
+            GL_EXTCALL(glGetUnsignedBytevEXT(GL_DRIVER_UUID_EXT, (GLubyte *)&adapter->driver_uuid));
+            GL_EXTCALL(glGetUnsignedBytei_vEXT(GL_DEVICE_UUID_EXT, 0, (GLubyte *)&adapter->device_uuid));
+
+            TRACE("Driver UUID: %s, device UUID %s.\n",
+                    debugstr_guid(&adapter->driver_uuid), debugstr_guid(&adapter->device_uuid));
+        }
+        else
+        {
+            WARN("Unexpected device count %d.\n", device_count);
+        }
+    }
 
     gl_ext_emul_mask = adapter->vertex_pipe->vp_get_emul_mask(gl_info)
             | adapter->fragment_pipe->get_emul_mask(gl_info);
@@ -4220,9 +4246,162 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter *adapter, HDC dc
     }
 }
 
+static void adapter_gl_get_wined3d_caps(const struct wined3d_adapter *adapter, struct wined3d_caps *caps)
+{
+    const struct wined3d_d3d_info *d3d_info = &adapter->d3d_info;
+    const struct wined3d_gl_info *gl_info = &adapter->gl_info;
+
+    caps->ddraw_caps.dds_caps |= WINEDDSCAPS_3DDEVICE
+            | WINEDDSCAPS_MIPMAP
+            | WINEDDSCAPS_TEXTURE
+            | WINEDDSCAPS_VIDEOMEMORY
+            | WINEDDSCAPS_ZBUFFER;
+    caps->ddraw_caps.caps |= WINEDDCAPS_3D;
+
+    if (gl_info->supported[ARB_FRAMEBUFFER_OBJECT] || gl_info->supported[EXT_FRAMEBUFFER_OBJECT])
+        caps->Caps2 |= WINED3DCAPS2_CANGENMIPMAP;
+
+    if (gl_info->supported[WINED3D_GL_BLEND_EQUATION])
+        caps->PrimitiveMiscCaps |= WINED3DPMISCCAPS_BLENDOP;
+    if (gl_info->supported[EXT_BLEND_EQUATION_SEPARATE] && gl_info->supported[EXT_BLEND_FUNC_SEPARATE])
+        caps->PrimitiveMiscCaps |= WINED3DPMISCCAPS_SEPARATEALPHABLEND;
+    if (gl_info->supported[EXT_DRAW_BUFFERS2])
+        caps->PrimitiveMiscCaps |= WINED3DPMISCCAPS_INDEPENDENTWRITEMASKS;
+    if (gl_info->supported[ARB_FRAMEBUFFER_SRGB])
+        caps->PrimitiveMiscCaps |= WINED3DPMISCCAPS_POSTBLENDSRGBCONVERT;
+
+    if (gl_info->supported[ARB_TEXTURE_FILTER_ANISOTROPIC])
+    {
+        caps->RasterCaps |= WINED3DPRASTERCAPS_ANISOTROPY
+                | WINED3DPRASTERCAPS_ZBIAS
+                | WINED3DPRASTERCAPS_MIPMAPLODBIAS;
+    }
+
+    if (gl_info->supported[ARB_BLEND_FUNC_EXTENDED])
+        caps->DestBlendCaps |= WINED3DPBLENDCAPS_SRCALPHASAT;
+
+    if (gl_info->supported[EXT_BLEND_COLOR])
+    {
+        caps->SrcBlendCaps |= WINED3DPBLENDCAPS_BLENDFACTOR;
+        caps->DestBlendCaps |= WINED3DPBLENDCAPS_BLENDFACTOR;
+    }
+
+    if (gl_info->supported[EXT_TEXTURE3D])
+    {
+        caps->TextureCaps |= WINED3DPTEXTURECAPS_VOLUMEMAP
+                | WINED3DPTEXTURECAPS_MIPVOLUMEMAP;
+        if (!d3d_info->texture_npot)
+            caps->TextureCaps |= WINED3DPTEXTURECAPS_VOLUMEMAP_POW2;
+    }
+
+    if (gl_info->supported[ARB_TEXTURE_CUBE_MAP])
+    {
+        caps->TextureCaps |= WINED3DPTEXTURECAPS_CUBEMAP
+                | WINED3DPTEXTURECAPS_MIPCUBEMAP;
+        if (!d3d_info->texture_npot)
+            caps->TextureCaps |= WINED3DPTEXTURECAPS_CUBEMAP_POW2;
+    }
+
+    if (gl_info->supported[ARB_TEXTURE_FILTER_ANISOTROPIC])
+    {
+        caps->TextureFilterCaps |= WINED3DPTFILTERCAPS_MAGFANISOTROPIC
+                | WINED3DPTFILTERCAPS_MINFANISOTROPIC;
+    }
+
+    if (gl_info->supported[ARB_TEXTURE_CUBE_MAP])
+    {
+        caps->CubeTextureFilterCaps |= WINED3DPTFILTERCAPS_MAGFLINEAR
+                | WINED3DPTFILTERCAPS_MAGFPOINT
+                | WINED3DPTFILTERCAPS_MINFLINEAR
+                | WINED3DPTFILTERCAPS_MINFPOINT
+                | WINED3DPTFILTERCAPS_MIPFLINEAR
+                | WINED3DPTFILTERCAPS_MIPFPOINT
+                | WINED3DPTFILTERCAPS_LINEAR
+                | WINED3DPTFILTERCAPS_LINEARMIPLINEAR
+                | WINED3DPTFILTERCAPS_LINEARMIPNEAREST
+                | WINED3DPTFILTERCAPS_MIPLINEAR
+                | WINED3DPTFILTERCAPS_MIPNEAREST
+                | WINED3DPTFILTERCAPS_NEAREST;
+
+        if (gl_info->supported[ARB_TEXTURE_FILTER_ANISOTROPIC])
+        {
+            caps->CubeTextureFilterCaps |= WINED3DPTFILTERCAPS_MAGFANISOTROPIC
+                    | WINED3DPTFILTERCAPS_MINFANISOTROPIC;
+        }
+    }
+
+    if (gl_info->supported[EXT_TEXTURE3D])
+    {
+        caps->VolumeTextureFilterCaps |= WINED3DPTFILTERCAPS_MAGFLINEAR
+                | WINED3DPTFILTERCAPS_MAGFPOINT
+                | WINED3DPTFILTERCAPS_MINFLINEAR
+                | WINED3DPTFILTERCAPS_MINFPOINT
+                | WINED3DPTFILTERCAPS_MIPFLINEAR
+                | WINED3DPTFILTERCAPS_MIPFPOINT
+                | WINED3DPTFILTERCAPS_LINEAR
+                | WINED3DPTFILTERCAPS_LINEARMIPLINEAR
+                | WINED3DPTFILTERCAPS_LINEARMIPNEAREST
+                | WINED3DPTFILTERCAPS_MIPLINEAR
+                | WINED3DPTFILTERCAPS_MIPNEAREST
+                | WINED3DPTFILTERCAPS_NEAREST;
+    }
+
+    if (gl_info->supported[ARB_TEXTURE_BORDER_CLAMP])
+    {
+        caps->TextureAddressCaps |= WINED3DPTADDRESSCAPS_BORDER;
+    }
+    if (gl_info->supported[ARB_TEXTURE_MIRRORED_REPEAT])
+    {
+        caps->TextureAddressCaps |= WINED3DPTADDRESSCAPS_MIRROR;
+    }
+    if (gl_info->supported[ARB_TEXTURE_MIRROR_CLAMP_TO_EDGE])
+    {
+        caps->TextureAddressCaps |= WINED3DPTADDRESSCAPS_MIRRORONCE;
+    }
+
+    if (gl_info->supported[EXT_TEXTURE3D])
+    {
+        caps->VolumeTextureAddressCaps |= WINED3DPTADDRESSCAPS_INDEPENDENTUV
+                | WINED3DPTADDRESSCAPS_CLAMP
+                | WINED3DPTADDRESSCAPS_WRAP;
+
+        if (gl_info->supported[ARB_TEXTURE_BORDER_CLAMP])
+        {
+            caps->VolumeTextureAddressCaps |= WINED3DPTADDRESSCAPS_BORDER;
+        }
+        if (gl_info->supported[ARB_TEXTURE_MIRRORED_REPEAT])
+        {
+            caps->VolumeTextureAddressCaps |= WINED3DPTADDRESSCAPS_MIRROR;
+        }
+        if (gl_info->supported[ARB_TEXTURE_MIRROR_CLAMP_TO_EDGE])
+        {
+            caps->VolumeTextureAddressCaps |= WINED3DPTADDRESSCAPS_MIRRORONCE;
+        }
+    }
+
+    if (gl_info->supported[EXT_TEXTURE3D])
+        caps->MaxVolumeExtent = gl_info->limits.texture3d_size;
+
+    if (gl_info->supported[EXT_STENCIL_WRAP])
+    {
+        caps->StencilCaps |= WINED3DSTENCILCAPS_DECR
+                | WINED3DSTENCILCAPS_INCR;
+    }
+
+    if (gl_info->supported[WINED3D_GL_VERSION_2_0]
+            || gl_info->supported[EXT_STENCIL_TWO_SIDE]
+            || gl_info->supported[ATI_SEPARATE_STENCIL])
+    {
+        caps->StencilCaps |= WINED3DSTENCILCAPS_TWOSIDED;
+    }
+
+    caps->MaxAnisotropy = gl_info->limits.anisotropy;
+}
+
 static const struct wined3d_adapter_ops wined3d_adapter_gl_ops =
 {
     wined3d_adapter_gl_create_context,
+    adapter_gl_get_wined3d_caps,
 };
 
 BOOL wined3d_adapter_gl_init(struct wined3d_adapter *adapter, DWORD wined3d_creation_flags)

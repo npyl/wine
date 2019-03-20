@@ -735,6 +735,219 @@ static void test_MFShutdownObject(void)
     ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
 }
 
+enum clock_action
+{
+    CLOCK_START,
+    CLOCK_STOP,
+    CLOCK_PAUSE,
+};
+
+static HRESULT WINAPI test_clock_sink_QueryInterface(IMFClockStateSink *iface, REFIID riid, void **obj)
+{
+    if (IsEqualIID(riid, &IID_IMFClockStateSink) ||
+            IsEqualIID(riid, &IID_IUnknown))
+    {
+        *obj = iface;
+        IMFClockStateSink_AddRef(iface);
+        return S_OK;
+    }
+
+    *obj = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI test_clock_sink_AddRef(IMFClockStateSink *iface)
+{
+    return 2;
+}
+
+static ULONG WINAPI test_clock_sink_Release(IMFClockStateSink *iface)
+{
+    return 1;
+}
+
+static HRESULT WINAPI test_clock_sink_OnClockStart(IMFClockStateSink *iface, MFTIME system_time, LONGLONG offset)
+{
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI test_clock_sink_OnClockStop(IMFClockStateSink *iface, MFTIME system_time)
+{
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI test_clock_sink_OnClockPause(IMFClockStateSink *iface, MFTIME system_time)
+{
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI test_clock_sink_OnClockRestart(IMFClockStateSink *iface, MFTIME system_time)
+{
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI test_clock_sink_OnClockSetRate(IMFClockStateSink *iface, MFTIME system_time, float rate)
+{
+    return E_NOTIMPL;
+}
+
+static const IMFClockStateSinkVtbl test_clock_sink_vtbl =
+{
+    test_clock_sink_QueryInterface,
+    test_clock_sink_AddRef,
+    test_clock_sink_Release,
+    test_clock_sink_OnClockStart,
+    test_clock_sink_OnClockStop,
+    test_clock_sink_OnClockPause,
+    test_clock_sink_OnClockRestart,
+    test_clock_sink_OnClockSetRate,
+};
+
+static void test_presentation_clock(void)
+{
+    static const struct clock_state_test
+    {
+        enum clock_action action;
+        MFCLOCK_STATE clock_state;
+        MFCLOCK_STATE source_state;
+        HRESULT hr;
+    }
+    clock_state_change[] =
+    {
+        { CLOCK_STOP, MFCLOCK_STATE_STOPPED, MFCLOCK_STATE_INVALID },
+        { CLOCK_PAUSE, MFCLOCK_STATE_STOPPED, MFCLOCK_STATE_INVALID, MF_E_INVALIDREQUEST },
+        { CLOCK_STOP, MFCLOCK_STATE_STOPPED, MFCLOCK_STATE_INVALID, MF_E_CLOCK_STATE_ALREADY_SET },
+        { CLOCK_START, MFCLOCK_STATE_RUNNING, MFCLOCK_STATE_RUNNING },
+        { CLOCK_START, MFCLOCK_STATE_RUNNING, MFCLOCK_STATE_RUNNING },
+        { CLOCK_PAUSE, MFCLOCK_STATE_PAUSED, MFCLOCK_STATE_PAUSED },
+        { CLOCK_PAUSE, MFCLOCK_STATE_PAUSED, MFCLOCK_STATE_PAUSED, MF_E_CLOCK_STATE_ALREADY_SET },
+        { CLOCK_STOP, MFCLOCK_STATE_STOPPED, MFCLOCK_STATE_STOPPED },
+        { CLOCK_START, MFCLOCK_STATE_RUNNING, MFCLOCK_STATE_RUNNING },
+        { CLOCK_STOP, MFCLOCK_STATE_STOPPED, MFCLOCK_STATE_STOPPED },
+        { CLOCK_STOP, MFCLOCK_STATE_STOPPED, MFCLOCK_STATE_STOPPED, MF_E_CLOCK_STATE_ALREADY_SET },
+        { CLOCK_PAUSE, MFCLOCK_STATE_STOPPED, MFCLOCK_STATE_STOPPED, MF_E_INVALIDREQUEST },
+        { CLOCK_START, MFCLOCK_STATE_RUNNING, MFCLOCK_STATE_RUNNING },
+        { CLOCK_PAUSE, MFCLOCK_STATE_PAUSED, MFCLOCK_STATE_PAUSED },
+        { CLOCK_START, MFCLOCK_STATE_RUNNING, MFCLOCK_STATE_RUNNING },
+    };
+    IMFClockStateSink test_sink = { &test_clock_sink_vtbl };
+    IMFPresentationTimeSource *time_source;
+    IMFRateControl *rate_control;
+    IMFPresentationClock *clock;
+    MFCLOCK_PROPERTIES props;
+    IMFShutdown *shutdown;
+    LONGLONG clock_time;
+    MFCLOCK_STATE state;
+    IMFTimer *timer;
+    MFTIME systime;
+    unsigned int i;
+    DWORD value;
+    HRESULT hr;
+
+    hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+    ok(hr == S_OK, "Failed to start up, hr %#x.\n", hr);
+
+    hr = MFCreatePresentationClock(&clock);
+    ok(hr == S_OK, "Failed to create presentation clock, hr %#x.\n", hr);
+
+    hr = IMFPresentationClock_GetTimeSource(clock, &time_source);
+    ok(hr == MF_E_CLOCK_NO_TIME_SOURCE, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFPresentationClock_GetClockCharacteristics(clock, &value);
+todo_wine
+    ok(hr == MF_E_CLOCK_NO_TIME_SOURCE, "Unexpected hr %#x.\n", hr);
+
+    value = 1;
+    hr = IMFPresentationClock_GetContinuityKey(clock, &value);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+    ok(value == 0, "Unexpected value %u.\n", value);
+
+    hr = IMFPresentationClock_GetProperties(clock, &props);
+todo_wine
+    ok(hr == MF_E_CLOCK_NO_TIME_SOURCE, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFPresentationClock_GetState(clock, 0, &state);
+    ok(hr == S_OK, "Failed to get state, hr %#x.\n", hr);
+    ok(state == MFCLOCK_STATE_INVALID, "Unexpected state %d.\n", state);
+
+    hr = IMFPresentationClock_GetCorrelatedTime(clock, 0, &clock_time, &systime);
+todo_wine
+    ok(hr == MF_E_CLOCK_NO_TIME_SOURCE, "Unexpected hr %#x.\n", hr);
+
+    /* Sinks. */
+    hr = IMFPresentationClock_AddClockStateSink(clock, NULL);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFPresentationClock_AddClockStateSink(clock, &test_sink);
+    ok(hr == S_OK, "Failed to add a sink, hr %#x.\n", hr);
+
+    hr = IMFPresentationClock_AddClockStateSink(clock, &test_sink);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFPresentationClock_RemoveClockStateSink(clock, NULL);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFPresentationClock_RemoveClockStateSink(clock, &test_sink);
+    ok(hr == S_OK, "Failed to remove sink, hr %#x.\n", hr);
+
+    hr = IMFPresentationClock_RemoveClockStateSink(clock, &test_sink);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+
+    /* Set default time source. */
+    hr = MFCreateSystemTimeSource(&time_source);
+    ok(hr == S_OK, "Failed to create time source, hr %#x.\n", hr);
+
+    hr = IMFPresentationClock_SetTimeSource(clock, time_source);
+    ok(hr == S_OK, "Failed to set time source, hr %#x.\n", hr);
+
+    /* State changes. */
+    for (i = 0; i < ARRAY_SIZE(clock_state_change); ++i)
+    {
+        switch (clock_state_change[i].action)
+        {
+            case CLOCK_STOP:
+                hr = IMFPresentationClock_Stop(clock);
+                break;
+            case CLOCK_PAUSE:
+                hr = IMFPresentationClock_Pause(clock);
+                break;
+            case CLOCK_START:
+                hr = IMFPresentationClock_Start(clock, 0);
+                break;
+            default:
+                ;
+        }
+        ok(hr == clock_state_change[i].hr, "%u: unexpected hr %#x.\n", i, hr);
+
+        hr = IMFPresentationTimeSource_GetState(time_source, 0, &state);
+        ok(hr == S_OK, "%u: failed to get state, hr %#x.\n", i, hr);
+        ok(state == clock_state_change[i].source_state, "%u: unexpected state %d.\n", i, state);
+
+        hr = IMFPresentationClock_GetState(clock, 0, &state);
+        ok(hr == S_OK, "%u: failed to get state, hr %#x.\n", i, hr);
+        ok(state == clock_state_change[i].clock_state, "%u: unexpected state %d.\n", i, state);
+    }
+
+    IMFPresentationTimeSource_Release(time_source);
+
+    hr = IMFPresentationClock_QueryInterface(clock, &IID_IMFRateControl, (void **)&rate_control);
+    ok(hr == S_OK, "Failed to get rate control interface, hr %#x.\n", hr);
+    IMFRateControl_Release(rate_control);
+
+    hr = IMFPresentationClock_QueryInterface(clock, &IID_IMFTimer, (void **)&timer);
+    ok(hr == S_OK, "Failed to get timer interface, hr %#x.\n", hr);
+    IMFTimer_Release(timer);
+
+    hr = IMFPresentationClock_QueryInterface(clock, &IID_IMFShutdown, (void **)&shutdown);
+    ok(hr == S_OK, "Failed to get shutdown interface, hr %#x.\n", hr);
+    IMFShutdown_Release(shutdown);
+
+    IMFPresentationClock_Release(clock);
+
+    hr = MFShutdown();
+    ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
+}
+
 START_TEST(mf)
 {
     test_topology();
@@ -743,4 +956,5 @@ START_TEST(mf)
     test_MFCreateSequencerSource();
     test_media_session();
     test_MFShutdownObject();
+    test_presentation_clock();
 }

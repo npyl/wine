@@ -73,6 +73,7 @@
 #define WINED3D_QUIRK_BROKEN_ARB_FOG            0x00000200
 
 struct fragment_pipeline;
+struct wined3d_adapter;
 struct wined3d_context;
 struct wined3d_state;
 struct wined3d_texture_gl;
@@ -206,6 +207,7 @@ struct wined3d_d3d_info
     unsigned int texture_npot : 1;
     unsigned int texture_npot_conditional : 1;
     unsigned int draw_base_vertex_offset : 1;
+    unsigned int vertex_bgra : 1;
     enum wined3d_feature_level feature_level;
 
     DWORD multisample_draw_location;
@@ -1511,8 +1513,7 @@ struct wined3d_stream_info
 };
 
 void wined3d_stream_info_from_declaration(struct wined3d_stream_info *stream_info,
-        const struct wined3d_state *state, const struct wined3d_gl_info *gl_info,
-        const struct wined3d_d3d_info *d3d_info) DECLSPEC_HIDDEN;
+        const struct wined3d_state *state, const struct wined3d_d3d_info *d3d_info) DECLSPEC_HIDDEN;
 
 struct wined3d_direct_dispatch_parameters
 {
@@ -2678,6 +2679,7 @@ struct wined3d_adapter_ops
 {
     BOOL (*adapter_create_context)(struct wined3d_context *context,
             struct wined3d_texture *target, const struct wined3d_format *ds_format);
+    void (*adapter_get_wined3d_caps)(const struct wined3d_adapter *adapter, struct wined3d_caps *caps);
 };
 
 BOOL wined3d_adapter_gl_create_context(struct wined3d_context *context,
@@ -2686,7 +2688,7 @@ BOOL wined3d_adapter_gl_create_context(struct wined3d_context *context,
 /* The adapter structure */
 struct wined3d_adapter
 {
-    UINT ordinal;
+    unsigned int ordinal;
     POINT monitor_position;
     enum wined3d_format_id screen_format;
 
@@ -2694,6 +2696,8 @@ struct wined3d_adapter
     struct wined3d_d3d_info d3d_info;
     struct wined3d_driver_info driver_info;
     UINT64 vram_bytes_used;
+    GUID driver_uuid;
+    GUID device_uuid;
     LUID luid;
 
     WCHAR device_name[CCHDEVICENAME]; /* for use with e.g. ChangeDisplaySettings() */
@@ -4009,7 +4013,7 @@ static inline struct wined3d_unordered_access_view_gl *wined3d_unordered_access_
 struct wined3d_swapchain_ops
 {
     void (*swapchain_present)(struct wined3d_swapchain *swapchain,
-            const RECT *src_rect, const RECT *dst_rect, DWORD flags);
+            const RECT *src_rect, const RECT *dst_rect, unsigned int swap_interval, DWORD flags);
     void (*swapchain_frontbuffer_updated)(struct wined3d_swapchain *swapchain);
 };
 
@@ -4047,8 +4051,6 @@ struct wined3d_swapchain
 };
 
 void wined3d_swapchain_activate(struct wined3d_swapchain *swapchain, BOOL activate) DECLSPEC_HIDDEN;
-void wined3d_swapchain_set_swap_interval(struct wined3d_swapchain *swapchain,
-        unsigned int swap_interval) DECLSPEC_HIDDEN;
 struct wined3d_context *swapchain_get_context(struct wined3d_swapchain *swapchain) DECLSPEC_HIDDEN;
 void swapchain_destroy_contexts(struct wined3d_swapchain *swapchain) DECLSPEC_HIDDEN;
 HDC swapchain_get_backup_dc(struct wined3d_swapchain *swapchain) DECLSPEC_HIDDEN;

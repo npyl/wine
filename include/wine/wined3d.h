@@ -1719,17 +1719,19 @@ struct wined3d_tri_patch_info
 struct wined3d_adapter_identifier
 {
     char *driver;
-    UINT driver_size;
+    unsigned int driver_size;
     char *description;
-    UINT description_size;
+    unsigned int description_size;
     char *device_name;
-    UINT device_name_size;
+    unsigned int device_name_size;
     LARGE_INTEGER driver_version;
     DWORD vendor_id;
     DWORD device_id;
     DWORD subsystem_id;
     DWORD revision;
     GUID device_identifier;
+    GUID driver_uuid;
+    GUID device_uuid;
     DWORD whql_level;
     LUID adapter_luid;
     SIZE_T video_memory;
@@ -2204,7 +2206,7 @@ UINT __cdecl wined3d_get_adapter_mode_count(const struct wined3d *wined3d, UINT 
         enum wined3d_format_id format_id, enum wined3d_scanline_ordering scanline_ordering);
 HRESULT __cdecl wined3d_get_adapter_raster_status(const struct wined3d *wined3d, UINT adapter_idx,
         struct wined3d_raster_status *raster_status);
-HRESULT __cdecl wined3d_get_device_caps(const struct wined3d *wined3d, UINT adapter_idx,
+HRESULT __cdecl wined3d_get_device_caps(const struct wined3d *wined3d, unsigned int adapter_idx,
         enum wined3d_device_type device_type, struct wined3d_caps *caps);
 HRESULT __cdecl wined3d_get_output_desc(const struct wined3d *wined3d, unsigned int adapter_idx,
         struct wined3d_output_desc *desc);
