@@ -48,11 +48,25 @@ extern "C" {
     DEFINE_GUID(name, format, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71);
 
 #ifndef DIRECT3D_VERSION
-#define D3DFMT_X8R8G8B8     22
+#define D3DFMT_R8G8B8         20
+#define D3DFMT_A8R8G8B8       21
+#define D3DFMT_X8R8G8B8       22
+#define D3DFMT_R5G6B5         23
+#define D3DFMT_X1R5G5B5       24
+#define D3DFMT_A2B10G10R10    31
+#define D3DFMT_P8             41
+#define D3DFMT_A16B16G16R16F 113
 #endif
 
-DEFINE_MEDIATYPE_GUID(MFVideoFormat_WMV3,      MAKEFOURCC('W','M','V','3'));
-DEFINE_MEDIATYPE_GUID(MFVideoFormat_RGB32,     D3DFMT_X8R8G8B8);
+DEFINE_MEDIATYPE_GUID(MFVideoFormat_WMV3,          MAKEFOURCC('W','M','V','3'));
+DEFINE_MEDIATYPE_GUID(MFVideoFormat_RGB8,          D3DFMT_P8);
+DEFINE_MEDIATYPE_GUID(MFVideoFormat_RGB555,        D3DFMT_X1R5G5B5);
+DEFINE_MEDIATYPE_GUID(MFVideoFormat_RGB565,        D3DFMT_R5G6B5);
+DEFINE_MEDIATYPE_GUID(MFVideoFormat_RGB24,         D3DFMT_R8G8B8);
+DEFINE_MEDIATYPE_GUID(MFVideoFormat_RGB32,         D3DFMT_X8R8G8B8);
+DEFINE_MEDIATYPE_GUID(MFVideoFormat_ARGB32,        D3DFMT_A8R8G8B8);
+DEFINE_MEDIATYPE_GUID(MFVideoFormat_A2R10G10B10,   D3DFMT_A2B10G10R10);
+DEFINE_MEDIATYPE_GUID(MFVideoFormat_A16B16G16R16F, D3DFMT_A16B16G16R16F);
 
 #if defined(__cplusplus) && !defined(CINTERFACE)
 typedef struct tagMFASYNCRESULT : public IMFAsyncResult {
@@ -122,6 +136,27 @@ DEFINE_GUID(MFSampleExtension_DecodeTimestamp, 0x73a954d4, 0x09e2, 0x4861, 0xbe,
 DEFINE_GUID(MFSampleExtension_Timestamp,       0x1e436999, 0x69be, 0x4c7a, 0x93, 0x69, 0x70, 0x06, 0x8c, 0x02, 0x60, 0xcb);
 DEFINE_GUID(MFSampleExtension_Token,           0x8294da66, 0xf328, 0x4805, 0xb5, 0x51, 0x00, 0xde, 0xb4, 0xc5, 0x7a, 0x61);
 
+DEFINE_GUID(MF_EVENT_DO_THINNING,                       0x321ea6fb, 0xdad9, 0x46e4, 0xb3, 0x1d, 0xd2, 0xea, 0xe7, 0x09, 0x0e, 0x30);
+DEFINE_GUID(MF_EVENT_MFT_CONTEXT,                       0xb7cd31f1, 0x899e, 0x4b41, 0x80, 0xc9, 0x26, 0xa8, 0x96, 0xd3, 0x29, 0x77);
+DEFINE_GUID(MF_EVENT_MFT_INPUT_STREAM_ID,               0xf29c2cca, 0x7ae6, 0x42d2, 0xb2, 0x84, 0xbf, 0x83, 0x7c, 0xc8, 0x74, 0xe2);
+DEFINE_GUID(MF_EVENT_PRESENTATION_TIME_OFFSET,          0x5ad914d1, 0x9b45, 0x4a8d, 0xa2, 0xc0, 0x81, 0xd1, 0xe5, 0x0b, 0xfb, 0x07);
+DEFINE_GUID(MF_EVENT_SCRUBSAMPLE_TIME,                  0x9ac712b3, 0xdcb8, 0x44d5, 0x8d, 0x0c, 0x37, 0x45, 0x5a, 0x27, 0x82, 0xe3);
+DEFINE_GUID(MF_EVENT_SESSIONCAPS,                       0x7e5ebcd0, 0x11b8, 0x4abe, 0xaf, 0xad, 0x10, 0xf6, 0x59, 0x9a, 0x7f, 0x42);
+DEFINE_GUID(MF_EVENT_SESSIONCAPS_DELTA,                 0x7e5ebcd1, 0x11b8, 0x4abe, 0xaf, 0xad, 0x10, 0xf6, 0x59, 0x9a, 0x7f, 0x42);
+DEFINE_GUID(MF_EVENT_SOURCE_ACTUAL_START,               0xa8cc55a9, 0x6b31, 0x419f, 0x84, 0x5d, 0xff, 0xb3, 0x51, 0xa2, 0x43, 0x4b);
+DEFINE_GUID(MF_EVENT_SOURCE_CHARACTERISTICS,            0x47db8490, 0x8b22, 0x4f52, 0xaf, 0xda, 0x9c, 0xe1, 0xb2, 0xd3, 0xcf, 0xa8);
+DEFINE_GUID(MF_EVENT_SOURCE_CHARACTERISTICS_OLD,        0x47db8491, 0x8b22, 0x4f52, 0xaf, 0xda, 0x9c, 0xe1, 0xb2, 0xd3, 0xcf, 0xa8);
+DEFINE_GUID(MF_EVENT_SOURCE_FAKE_START,                 0xa8cc55a7, 0x6b31, 0x419f, 0x84, 0x5d, 0xff, 0xb3, 0x51, 0xa2, 0x43, 0x4b);
+DEFINE_GUID(MF_EVENT_SOURCE_PROJECTSTART,               0xa8cc55a8, 0x6b31, 0x419f, 0x84, 0x5d, 0xff, 0xb3, 0x51, 0xa2, 0x43, 0x4b);
+DEFINE_GUID(MF_EVENT_SOURCE_TOPOLOGY_CANCELED,          0xdb62f650, 0x9a5e, 0x4704, 0xac, 0xf3, 0x56, 0x3b, 0xc6, 0xa7, 0x33, 0x64);
+DEFINE_GUID(MF_EVENT_START_PRESENTATION_TIME,           0x5ad914d0, 0x9b45, 0x4a8d, 0xa2, 0xc0, 0x81, 0xd1, 0xe5, 0x0b, 0xfb, 0x07);
+DEFINE_GUID(MF_EVENT_START_PRESENTATION_TIME_AT_OUTPUT, 0x5ad914d2, 0x9b45, 0x4a8d, 0xa2, 0xc0, 0x81, 0xd1, 0xe5, 0x0b, 0xfb, 0x07);
+DEFINE_GUID(MF_EVENT_STREAM_METADATA_CONTENT_KEYIDS,    0x5063449d, 0xcc29, 0x4fc6, 0xa7, 0x5a, 0xd2, 0x47, 0xb3, 0x5a, 0xf8, 0x5c);
+DEFINE_GUID(MF_EVENT_STREAM_METADATA_KEYDATA,           0xcd59a4a1, 0x4a3b, 0x4bbd, 0x86, 0x65, 0x72, 0xa4, 0x0f, 0xbe, 0xa7, 0x76);
+DEFINE_GUID(MF_EVENT_STREAM_METADATA_SYSTEMID,          0x1ea2ef64, 0xba16, 0x4a36, 0x87, 0x19, 0xfe, 0x75, 0x60, 0xba, 0x32, 0xad);
+DEFINE_GUID(MF_EVENT_TOPOLOGY_STATUS,                   0x30c5018d, 0x9a53, 0x454b, 0xad, 0x9e, 0x6d, 0x5f, 0x8f, 0xa7, 0xc4, 0x3b);
+DEFINE_GUID(MF_EVENT_OUTPUT_NODE,                       0x830f1a8b, 0xc060, 0x46dd, 0xa8, 0x01, 0x1c, 0x95, 0xde, 0xc9, 0xb1, 0x07);
+
 typedef unsigned __int64 MFWORKITEM_KEY;
 
 typedef enum
@@ -151,7 +186,9 @@ typedef void (CALLBACK *MFPERIODICCALLBACK)(IUnknown *context);
 HRESULT WINAPI MFAddPeriodicCallback(MFPERIODICCALLBACK callback, IUnknown *context, DWORD *key);
 HRESULT WINAPI MFAllocateWorkQueue(DWORD *queue);
 HRESULT WINAPI MFAllocateWorkQueueEx(MFASYNC_WORKQUEUE_TYPE queue_type, DWORD *queue);
+HRESULT WINAPI MFCalculateImageSize(REFGUID subtype, UINT32 width, UINT32 height, UINT32 *size);
 HRESULT WINAPI MFCancelWorkItem(MFWORKITEM_KEY key);
+BOOL    WINAPI MFCompareFullToPartialMediaType(IMFMediaType *full_type, IMFMediaType *partial_type);
 HRESULT WINAPI MFCopyImage(BYTE *dest, LONG deststride, const BYTE *src, LONG srcstride, DWORD width, DWORD lines);
 HRESULT WINAPI MFCreateAlignedMemoryBuffer(DWORD max_length, DWORD alignment, IMFMediaBuffer **buffer);
 HRESULT WINAPI MFCreateAttributes(IMFAttributes **attributes, UINT32 size);
@@ -167,6 +204,8 @@ HRESULT WINAPI MFCreateSample(IMFSample **sample);
 HRESULT WINAPI MFCreateMemoryBuffer(DWORD max_length, IMFMediaBuffer **buffer);
 void *  WINAPI MFHeapAlloc(SIZE_T size, ULONG flags, char *file, int line, EAllocationType type);
 void    WINAPI MFHeapFree(void *ptr);
+HRESULT WINAPI MFGetAttributesAsBlob(IMFAttributes *attributes, UINT8 *buffer, UINT size);
+HRESULT WINAPI MFGetAttributesAsBlobSize(IMFAttributes *attributes, UINT32 *size);
 HRESULT WINAPI MFGetTimerPeriodicity(DWORD *periodicity);
 HRESULT WINAPI MFTEnum(GUID category, UINT32 flags, MFT_REGISTER_TYPE_INFO *input_type,
                        MFT_REGISTER_TYPE_INFO *output_type, IMFAttributes *attributes,
@@ -174,6 +213,7 @@ HRESULT WINAPI MFTEnum(GUID category, UINT32 flags, MFT_REGISTER_TYPE_INFO *inpu
 HRESULT WINAPI MFTEnumEx(GUID category, UINT32 flags, const MFT_REGISTER_TYPE_INFO *input_type,
                          const MFT_REGISTER_TYPE_INFO *output_type, IMFActivate ***activate,
                          UINT32 *pcount);
+HRESULT WINAPI MFInitAttributesFromBlob(IMFAttributes *attributes, const UINT8 *buffer, UINT size);
 HRESULT WINAPI MFInvokeCallback(IMFAsyncResult *result);
 HRESULT WINAPI MFLockPlatform(void);
 HRESULT WINAPI MFPutWorkItem(DWORD queue, IMFAsyncCallback *callback, IUnknown *state);

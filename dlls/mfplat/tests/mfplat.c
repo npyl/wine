@@ -47,6 +47,7 @@ DEFINE_GUID(DUMMY_GUID3, 0x12345678,0x1234,0x1234,0x23,0x23,0x23,0x23,0x23,0x23,
 #include "strsafe.h"
 
 #include "wine/test.h"
+#include "wine/heap.h"
 
 static BOOL is_win8_plus;
 
@@ -2347,6 +2348,274 @@ static void test_MFInvokeCallback(void)
     ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
 }
 
+static void test_stream_descriptor(void)
+{
+    IMFMediaType *media_types[2], *media_type;
+    IMFMediaTypeHandler *type_handler;
+    IMFStreamDescriptor *stream_desc;
+    GUID major_type;
+    DWORD id, count;
+    unsigned int i;
+    HRESULT hr;
+
+    hr = MFCreateStreamDescriptor(123, 0, NULL, &stream_desc);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    for (i = 0; i < ARRAY_SIZE(media_types); ++i)
+    {
+        hr = MFCreateMediaType(&media_types[i]);
+        ok(hr == S_OK, "Failed to create media type, hr %#x.\n", hr);
+    }
+
+    hr = MFCreateStreamDescriptor(123, 0, media_types, &stream_desc);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = MFCreateStreamDescriptor(123, ARRAY_SIZE(media_types), media_types, &stream_desc);
+    ok(hr == S_OK, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFStreamDescriptor_GetStreamIdentifier(stream_desc, &id);
+    ok(hr == S_OK, "Failed to get descriptor id, hr %#x.\n", hr);
+    ok(id == 123, "Unexpected id %#x.\n", id);
+
+    hr = IMFStreamDescriptor_GetMediaTypeHandler(stream_desc, &type_handler);
+    ok(hr == S_OK, "Failed to get type handler, hr %#x.\n", hr);
+
+    hr = IMFMediaTypeHandler_GetMediaTypeCount(type_handler, &count);
+    ok(hr == S_OK, "Failed to get type count, hr %#x.\n", hr);
+    ok(count == ARRAY_SIZE(media_types), "Unexpected type count.\n");
+
+    hr = IMFMediaTypeHandler_GetCurrentMediaType(type_handler, &media_type);
+    ok(hr == MF_E_NOT_INITIALIZED, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFMediaTypeHandler_GetMajorType(type_handler, &major_type);
+    ok(hr == MF_E_ATTRIBUTENOTFOUND, "Unexpected hr %#x.\n", hr);
+
+    for (i = 0; i < ARRAY_SIZE(media_types); ++i)
+    {
+        hr = IMFMediaTypeHandler_GetMediaTypeByIndex(type_handler, i, &media_type);
+        ok(hr == S_OK, "Failed to get media type, hr %#x.\n", hr);
+        ok(media_type == media_types[i], "Unexpected object.\n");
+
+        if (SUCCEEDED(hr))
+            IMFMediaType_Release(media_type);
+    }
+
+    hr = IMFMediaTypeHandler_GetMediaTypeByIndex(type_handler, 2, &media_type);
+    ok(hr == MF_E_NO_MORE_TYPES, "Unexpected hr %#x.\n", hr);
+
+    hr = MFCreateMediaType(&media_type);
+    ok(hr == S_OK, "Failed to create media type, hr %#x.\n", hr);
+
+    hr = IMFMediaTypeHandler_SetCurrentMediaType(type_handler, media_type);
+    ok(hr == S_OK, "Failed to set current type, hr %#x.\n", hr);
+
+    hr = IMFMediaTypeHandler_GetMajorType(type_handler, &major_type);
+    ok(hr == MF_E_ATTRIBUTENOTFOUND, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFMediaType_SetGUID(media_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "Failed to set major type, hr %#x.\n", hr);
+
+    hr = IMFMediaTypeHandler_GetMajorType(type_handler, &major_type);
+    ok(hr == S_OK, "Failed to get major type, hr %#x.\n", hr);
+    ok(IsEqualGUID(&major_type, &MFMediaType_Audio), "Unexpected major type.\n");
+
+    hr = IMFMediaTypeHandler_GetMediaTypeCount(type_handler, &count);
+    ok(hr == S_OK, "Failed to get type count, hr %#x.\n", hr);
+    ok(count == ARRAY_SIZE(media_types), "Unexpected type count.\n");
+
+    IMFMediaType_Release(media_type);
+
+    IMFMediaTypeHandler_Release(type_handler);
+
+    IMFStreamDescriptor_Release(stream_desc);
+}
+
+static void test_MFCalculateImageSize(void)
+{
+    static const struct image_size_test
+    {
+        const GUID *subtype;
+        UINT32 width;
+        UINT32 height;
+        UINT32 size;
+    }
+    image_size_tests[] =
+    {
+        { &MFVideoFormat_RGB8, 3, 5, 20 },
+        { &MFVideoFormat_RGB8, 1, 1, 4 },
+        { &MFVideoFormat_RGB555, 3, 5, 40 },
+        { &MFVideoFormat_RGB555, 1, 1, 4 },
+        { &MFVideoFormat_RGB565, 3, 5, 40 },
+        { &MFVideoFormat_RGB565, 1, 1, 4 },
+        { &MFVideoFormat_RGB24, 3, 5, 60 },
+        { &MFVideoFormat_RGB24, 1, 1, 4 },
+        { &MFVideoFormat_RGB32, 3, 5, 60 },
+        { &MFVideoFormat_RGB32, 1, 1, 4 },
+        { &MFVideoFormat_ARGB32, 3, 5, 60 },
+        { &MFVideoFormat_ARGB32, 1, 1, 4 },
+        { &MFVideoFormat_A2R10G10B10, 3, 5, 60 },
+        { &MFVideoFormat_A2R10G10B10, 1, 1, 4 },
+        { &MFVideoFormat_A16B16G16R16F, 3, 5, 120 },
+        { &MFVideoFormat_A16B16G16R16F, 1, 1, 8 },
+    };
+    unsigned int i;
+    UINT32 size;
+    HRESULT hr;
+
+    size = 1;
+    hr = MFCalculateImageSize(&IID_IUnknown, 1, 1, &size);
+    ok(hr == E_INVALIDARG || broken(hr == S_OK) /* Vista */, "Unexpected hr %#x.\n", hr);
+    ok(size == 0, "Unexpected size %u.\n", size);
+
+    for (i = 0; i < ARRAY_SIZE(image_size_tests); ++i)
+    {
+        /* Those are supported since Win10. */
+        BOOL is_broken = IsEqualGUID(image_size_tests[i].subtype, &MFVideoFormat_A16B16G16R16F) ||
+                IsEqualGUID(image_size_tests[i].subtype, &MFVideoFormat_A2R10G10B10);
+
+        hr = MFCalculateImageSize(image_size_tests[i].subtype, image_size_tests[i].width,
+                image_size_tests[i].height, &size);
+        ok(hr == S_OK || (is_broken && hr == E_INVALIDARG), "%u: failed to calculate image size, hr %#x.\n", i, hr);
+        ok(size == image_size_tests[i].size, "%u: unexpected image size %u, expected %u.\n", i, size,
+            image_size_tests[i].size);
+    }
+}
+
+static void test_MFCompareFullToPartialMediaType(void)
+{
+    IMFMediaType *full_type, *partial_type;
+    HRESULT hr;
+    BOOL ret;
+
+    hr = MFCreateMediaType(&full_type);
+    ok(hr == S_OK, "Failed to create media type, hr %#x.\n", hr);
+
+    hr = MFCreateMediaType(&partial_type);
+    ok(hr == S_OK, "Failed to create media type, hr %#x.\n", hr);
+
+    ret = MFCompareFullToPartialMediaType(full_type, partial_type);
+    ok(!ret, "Unexpected result %d.\n", ret);
+
+    hr = IMFMediaType_SetGUID(full_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "Failed to set major type, hr %#x.\n", hr);
+
+    hr = IMFMediaType_SetGUID(partial_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "Failed to set major type, hr %#x.\n", hr);
+
+    ret = MFCompareFullToPartialMediaType(full_type, partial_type);
+    ok(ret, "Unexpected result %d.\n", ret);
+
+    hr = IMFMediaType_SetGUID(full_type, &MF_MT_SUBTYPE, &MFMediaType_Audio);
+    ok(hr == S_OK, "Failed to set major type, hr %#x.\n", hr);
+
+    ret = MFCompareFullToPartialMediaType(full_type, partial_type);
+    ok(ret, "Unexpected result %d.\n", ret);
+
+    hr = IMFMediaType_SetGUID(partial_type, &MF_MT_SUBTYPE, &MFMediaType_Video);
+    ok(hr == S_OK, "Failed to set major type, hr %#x.\n", hr);
+
+    ret = MFCompareFullToPartialMediaType(full_type, partial_type);
+    ok(!ret, "Unexpected result %d.\n", ret);
+
+    IMFMediaType_Release(full_type);
+    IMFMediaType_Release(partial_type);
+}
+
+static void test_attributes_serialization(void)
+{
+    static const WCHAR textW[] = {'T','e','x','t',0};
+    static const UINT8 blob[] = {1,2,3};
+    IMFAttributes *attributes, *dest;
+    UINT32 size, count, value32;
+    double value_dbl;
+    UINT64 value64;
+    UINT8 *buffer;
+    IUnknown *obj;
+    HRESULT hr;
+    WCHAR *str;
+    GUID guid;
+
+    hr = MFCreateAttributes(&attributes, 0);
+    ok(hr == S_OK, "Failed to create object, hr %#x.\n", hr);
+
+    hr = MFCreateAttributes(&dest, 0);
+    ok(hr == S_OK, "Failed to create object, hr %#x.\n", hr);
+
+    hr = MFGetAttributesAsBlobSize(attributes, &size);
+    ok(hr == S_OK, "Failed to get blob size, hr %#x.\n", hr);
+    ok(size == 8, "Got size %u.\n", size);
+
+    buffer = heap_alloc(size);
+
+    hr = MFGetAttributesAsBlob(attributes, buffer, size);
+    ok(hr == S_OK, "Failed to serialize, hr %#x.\n", hr);
+
+    hr = MFGetAttributesAsBlob(attributes, buffer, size - 1);
+    ok(hr == MF_E_BUFFERTOOSMALL, "Unexpected hr %#x.\n", hr);
+
+    hr = MFInitAttributesFromBlob(dest, buffer, size - 1);
+    ok(hr == E_INVALIDARG, "Unexpected hr %#x.\n", hr);
+
+    hr = IMFAttributes_SetUINT32(dest, &MF_MT_MAJOR_TYPE, 1);
+    ok(hr == S_OK, "Failed to set attribute, hr %#x.\n", hr);
+
+    hr = MFInitAttributesFromBlob(dest, buffer, size);
+    ok(hr == S_OK, "Failed to deserialize, hr %#x.\n", hr);
+
+    /* Previous items are cleared. */
+    hr = IMFAttributes_GetCount(dest, &count);
+    ok(hr == S_OK, "Failed to get attribute count, hr %#x.\n", hr);
+    ok(count == 0, "Unexpected count %u.\n", count);
+
+    heap_free(buffer);
+
+    /* Set some attributes of various types. */
+    IMFAttributes_SetUINT32(attributes, &MF_MT_MAJOR_TYPE, 456);
+    IMFAttributes_SetUINT64(attributes, &MF_MT_SUBTYPE, 123);
+    IMFAttributes_SetDouble(attributes, &IID_IUnknown, 0.5);
+    IMFAttributes_SetUnknown(attributes, &IID_IMFAttributes, (IUnknown *)attributes);
+    IMFAttributes_SetGUID(attributes, &GUID_NULL, &IID_IUnknown);
+    IMFAttributes_SetString(attributes, &DUMMY_CLSID, textW);
+    IMFAttributes_SetBlob(attributes, &DUMMY_GUID1, blob, sizeof(blob));
+
+    hr = MFGetAttributesAsBlobSize(attributes, &size);
+    ok(hr == S_OK, "Failed to get blob size, hr %#x.\n", hr);
+    ok(size > 8, "Got unexpected size %u.\n", size);
+
+    buffer = heap_alloc(size);
+    hr = MFGetAttributesAsBlob(attributes, buffer, size);
+    ok(hr == S_OK, "Failed to serialize, hr %#x.\n", hr);
+    hr = MFInitAttributesFromBlob(dest, buffer, size);
+    ok(hr == S_OK, "Failed to deserialize, hr %#x.\n", hr);
+    heap_free(buffer);
+
+    hr = IMFAttributes_GetUINT32(dest, &MF_MT_MAJOR_TYPE, &value32);
+    ok(hr == S_OK, "Failed to get get uint32 value, hr %#x.\n", hr);
+    ok(value32 == 456, "Unexpected value %u.\n", value32);
+    hr = IMFAttributes_GetUINT64(dest, &MF_MT_SUBTYPE, &value64);
+    ok(hr == S_OK, "Failed to get get uint64 value, hr %#x.\n", hr);
+    ok(value64 == 123, "Unexpected value.\n");
+    hr = IMFAttributes_GetDouble(dest, &IID_IUnknown, &value_dbl);
+    ok(hr == S_OK, "Failed to get get double value, hr %#x.\n", hr);
+    ok(value_dbl == 0.5, "Unexpected value.\n");
+    hr = IMFAttributes_GetUnknown(dest, &IID_IMFAttributes, &IID_IUnknown, (void **)&obj);
+    ok(hr == MF_E_ATTRIBUTENOTFOUND, "Unexpected hr %#x.\n", hr);
+    hr = IMFAttributes_GetGUID(dest, &GUID_NULL, &guid);
+    ok(hr == S_OK, "Failed to get guid value, hr %#x.\n", hr);
+    ok(IsEqualGUID(&guid, &IID_IUnknown), "Unexpected guid.\n");
+    hr = IMFAttributes_GetAllocatedString(dest, &DUMMY_CLSID, &str, &size);
+    ok(hr == S_OK, "Failed to get string value, hr %#x.\n", hr);
+    ok(!lstrcmpW(str, textW), "Unexpected string.\n");
+    CoTaskMemFree(str);
+    hr = IMFAttributes_GetAllocatedBlob(dest, &DUMMY_GUID1, &buffer, &size);
+    ok(hr == S_OK, "Failed to get blob value, hr %#x.\n", hr);
+    ok(!memcmp(buffer, blob, sizeof(blob)), "Unexpected blob.\n");
+    CoTaskMemFree(buffer);
+
+    IMFAttributes_Release(attributes);
+    IMFAttributes_Release(dest);
+}
+
 START_TEST(mfplat)
 {
     CoInitialize(NULL);
@@ -2375,6 +2644,10 @@ START_TEST(mfplat)
     test_presentation_descriptor();
     test_system_time_source();
     test_MFInvokeCallback();
+    test_stream_descriptor();
+    test_MFCalculateImageSize();
+    test_MFCompareFullToPartialMediaType();
+    test_attributes_serialization();
 
     CoUninitialize();
 }

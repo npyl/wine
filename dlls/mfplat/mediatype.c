@@ -931,9 +931,19 @@ static HRESULT WINAPI mediatype_handler_GetCurrentMediaType(IMFMediaTypeHandler 
 
 static HRESULT WINAPI mediatype_handler_GetMajorType(IMFMediaTypeHandler *iface, GUID *type)
 {
-    FIXME("%p, %p.\n", iface, type);
+    struct stream_desc *stream_desc = impl_from_IMFMediaTypeHandler(iface);
+    HRESULT hr;
 
-    return E_NOTIMPL;
+    TRACE("%p, %p.\n", iface, type);
+
+    EnterCriticalSection(&stream_desc->cs);
+    if (stream_desc->current_type)
+        hr = IMFMediaType_GetGUID(stream_desc->current_type, &MF_MT_MAJOR_TYPE, type);
+    else
+        hr = MF_E_ATTRIBUTENOTFOUND;
+    LeaveCriticalSection(&stream_desc->cs);
+
+    return hr;
 }
 
 static const IMFMediaTypeHandlerVtbl mediatypehandlervtbl =
@@ -1239,9 +1249,8 @@ static HRESULT WINAPI presentation_descriptor_GetItemByIndex(IMFPresentationDesc
 
 static HRESULT WINAPI presentation_descriptor_CopyAllItems(IMFPresentationDescriptor *iface, IMFAttributes *dest)
 {
-    FIXME("%p, %p.\n", iface, dest);
-
-    return E_NOTIMPL;
+    struct presentation_desc *presentation_desc = impl_from_IMFPresentationDescriptor(iface);
+    return IMFAttributes_CopyAllItems(&presentation_desc->attributes.IMFAttributes_iface, dest);
 }
 
 static HRESULT WINAPI presentation_descriptor_GetStreamDescriptorCount(IMFPresentationDescriptor *iface, DWORD *count)
@@ -1439,4 +1448,70 @@ HRESULT WINAPI MFCreatePresentationDescriptor(DWORD count, IMFStreamDescriptor *
     *out = &object->IMFPresentationDescriptor_iface;
 
     return S_OK;
+}
+
+struct uncompressed_video_format
+{
+    const GUID *subtype;
+    unsigned int bytes_per_pixel;
+};
+
+static int uncompressed_video_format_compare(const void *a, const void *b)
+{
+    const GUID *guid = a;
+    const struct uncompressed_video_format *format = b;
+    return memcmp(guid, format->subtype, sizeof(*guid));
+}
+
+/***********************************************************************
+ *      MFCalculateImageSize (mfplat.@)
+ */
+HRESULT WINAPI MFCalculateImageSize(REFGUID subtype, UINT32 width, UINT32 height, UINT32 *size)
+{
+    static const struct uncompressed_video_format video_formats[] =
+    {
+        { &MFVideoFormat_RGB24,         3 },
+        { &MFVideoFormat_ARGB32,        4 },
+        { &MFVideoFormat_RGB32,         4 },
+        { &MFVideoFormat_RGB565,        2 },
+        { &MFVideoFormat_RGB555,        2 },
+        { &MFVideoFormat_A2R10G10B10,   4 },
+        { &MFVideoFormat_RGB8,          1 },
+        { &MFVideoFormat_A16B16G16R16F, 8 },
+    };
+    struct uncompressed_video_format *format;
+
+    TRACE("%s, %u, %u, %p.\n", debugstr_guid(subtype), width, height, size);
+
+    format = bsearch(subtype, video_formats, ARRAY_SIZE(video_formats), sizeof(*video_formats),
+            uncompressed_video_format_compare);
+    if (format)
+    {
+         *size = ((width * format->bytes_per_pixel + 3) & ~3) * height;
+    }
+    else
+    {
+         *size = 0;
+    }
+
+    return format ? S_OK : E_INVALIDARG;
+}
+
+/***********************************************************************
+ *      MFCompareFullToPartialMediaType (mfplat.@)
+ */
+BOOL WINAPI MFCompareFullToPartialMediaType(IMFMediaType *full_type, IMFMediaType *partial_type)
+{
+    BOOL result;
+    GUID major;
+
+    TRACE("%p, %p.\n", full_type, partial_type);
+
+    if (FAILED(IMFMediaType_GetMajorType(partial_type, &major)))
+        return FALSE;
+
+    if (FAILED(IMFMediaType_Compare(partial_type, (IMFAttributes *)full_type, MF_ATTRIBUTES_MATCH_OUR_ITEMS, &result)))
+        return FALSE;
+
+    return result;
 }

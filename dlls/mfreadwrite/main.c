@@ -81,6 +81,8 @@ typedef struct source_reader
     IMFPresentationDescriptor *descriptor;
     DWORD first_audio_stream_index;
     DWORD first_video_stream_index;
+    IMFSourceReaderCallback *async_callback;
+    BOOL shutdown_on_release;
 } srcreader;
 
 struct sink_writer
@@ -217,7 +219,10 @@ static ULONG WINAPI src_reader_Release(IMFSourceReader *iface)
 
     if (!refcount)
     {
-        IMFMediaSource_Shutdown(reader->source);
+        if (reader->async_callback)
+            IMFSourceReaderCallback_Release(reader->async_callback);
+        if (reader->shutdown_on_release)
+            IMFMediaSource_Shutdown(reader->source);
         if (reader->descriptor)
             IMFPresentationDescriptor_Release(reader->descriptor);
         IMFMediaSource_Release(reader->source);
@@ -354,9 +359,21 @@ static HRESULT WINAPI src_reader_SetCurrentMediaType(IMFSourceReader *iface, DWO
 
 static HRESULT WINAPI src_reader_SetCurrentPosition(IMFSourceReader *iface, REFGUID format, REFPROPVARIANT position)
 {
-    srcreader *This = impl_from_IMFSourceReader(iface);
-    FIXME("%p, %s, %p\n", This, debugstr_guid(format), position);
-    return E_NOTIMPL;
+    struct source_reader *reader = impl_from_IMFSourceReader(iface);
+    DWORD flags;
+    HRESULT hr;
+
+    TRACE("%p, %s, %p.\n", iface, debugstr_guid(format), position);
+
+    /* FIXME: fail if we got pending samples. */
+
+    if (FAILED(hr = IMFMediaSource_GetCharacteristics(reader->source, &flags)))
+        return hr;
+
+    if (!(flags & MFMEDIASOURCE_CAN_SEEK))
+        return MF_E_INVALIDREQUEST;
+
+    return IMFMediaSource_Start(reader->source, reader->descriptor, format, position);
 }
 
 static HRESULT WINAPI src_reader_ReadSample(IMFSourceReader *iface, DWORD index,
@@ -418,6 +435,8 @@ static HRESULT WINAPI src_reader_GetPresentationAttribute(IMFSourceReader *iface
         REFGUID guid, PROPVARIANT *value)
 {
     struct source_reader *reader = impl_from_IMFSourceReader(iface);
+    IMFStreamDescriptor *sd;
+    BOOL selected;
     HRESULT hr;
 
     TRACE("%p, %#x, %s, %p.\n", iface, index, debugstr_guid(guid), value);
@@ -441,12 +460,23 @@ static HRESULT WINAPI src_reader_GetPresentationAttribute(IMFSourceReader *iface
                 return IMFPresentationDescriptor_GetItem(reader->descriptor, guid, value);
             }
             break;
+        case MF_SOURCE_READER_FIRST_VIDEO_STREAM:
+            index = reader->first_video_stream_index;
+            break;
+        case MF_SOURCE_READER_FIRST_AUDIO_STREAM:
+            index = reader->first_audio_stream_index;
+            break;
         default:
-            FIXME("Unsupported index %#x.\n", index);
-            return E_NOTIMPL;
+            ;
     }
 
-    return E_NOTIMPL;
+    if (FAILED(hr = IMFPresentationDescriptor_GetStreamDescriptorByIndex(reader->descriptor, index, &selected, &sd)))
+        return hr;
+
+    hr = IMFStreamDescriptor_GetItem(sd, guid, value);
+    IMFStreamDescriptor_Release(sd);
+
+    return hr;
 }
 
 struct IMFSourceReaderVtbl srcreader_vtbl =
@@ -501,7 +531,7 @@ static DWORD reader_get_first_stream_index(IMFPresentationDescriptor *descriptor
 }
 
 static HRESULT create_source_reader_from_source(IMFMediaSource *source, IMFAttributes *attributes,
-        REFIID riid, void **out)
+        BOOL shutdown_on_release, REFIID riid, void **out)
 {
     srcreader *object;
     HRESULT hr;
@@ -535,6 +565,10 @@ static HRESULT create_source_reader_from_source(IMFMediaSource *source, IMFAttri
         goto failed;
     }
 
+    if (attributes)
+        IMFAttributes_GetUnknown(attributes, &MF_SOURCE_READER_ASYNC_CALLBACK, &IID_IMFSourceReaderCallback,
+                (void **)&object->async_callback);
+
     hr = IMFSourceReader_QueryInterface(&object->IMFSourceReader_iface, riid, out);
 
 failed:
@@ -545,6 +579,7 @@ failed:
 static HRESULT create_source_reader_from_stream(IMFByteStream *stream, IMFAttributes *attributes,
         REFIID riid, void **out)
 {
+    IPropertyStore *props = NULL;
     IMFSourceResolver *resolver;
     MF_OBJECT_TYPE obj_type;
     IMFMediaSource *source;
@@ -553,19 +588,26 @@ static HRESULT create_source_reader_from_stream(IMFByteStream *stream, IMFAttrib
     if (FAILED(hr = MFCreateSourceResolver(&resolver)))
         return hr;
 
-    hr = IMFSourceResolver_CreateObjectFromByteStream(resolver, stream, NULL, MF_RESOLUTION_MEDIASOURCE, NULL,
+    if (attributes)
+        IMFAttributes_GetUnknown(attributes, &MF_SOURCE_READER_MEDIASOURCE_CONFIG, &IID_IPropertyStore,
+                (void **)&props);
+
+    hr = IMFSourceResolver_CreateObjectFromByteStream(resolver, stream, NULL, MF_RESOLUTION_MEDIASOURCE, props,
             &obj_type, (IUnknown **)&source);
     IMFSourceResolver_Release(resolver);
+    if (props)
+        IPropertyStore_Release(props);
     if (FAILED(hr))
         return hr;
 
-    hr = create_source_reader_from_source(source, attributes, riid, out);
+    hr = create_source_reader_from_source(source, attributes, TRUE, riid, out);
     IMFMediaSource_Release(source);
     return hr;
 }
 
 static HRESULT create_source_reader_from_url(const WCHAR *url, IMFAttributes *attributes, REFIID riid, void **out)
 {
+    IPropertyStore *props = NULL;
     IMFSourceResolver *resolver;
     IUnknown *object = NULL;
     MF_OBJECT_TYPE obj_type;
@@ -575,7 +617,11 @@ static HRESULT create_source_reader_from_url(const WCHAR *url, IMFAttributes *at
     if (FAILED(hr = MFCreateSourceResolver(&resolver)))
         return hr;
 
-    hr = IMFSourceResolver_CreateObjectFromURL(resolver, url, MF_RESOLUTION_MEDIASOURCE, NULL, &obj_type,
+    if (attributes)
+        IMFAttributes_GetUnknown(attributes, &MF_SOURCE_READER_MEDIASOURCE_CONFIG, &IID_IPropertyStore,
+                (void **)&props);
+
+    hr = IMFSourceResolver_CreateObjectFromURL(resolver, url, MF_RESOLUTION_MEDIASOURCE, props, &obj_type,
             &object);
     if (SUCCEEDED(hr))
     {
@@ -583,7 +629,7 @@ static HRESULT create_source_reader_from_url(const WCHAR *url, IMFAttributes *at
         {
             case MF_OBJECT_BYTESTREAM:
                 hr = IMFSourceResolver_CreateObjectFromByteStream(resolver, (IMFByteStream *)object, NULL,
-                        MF_RESOLUTION_MEDIASOURCE, NULL, &obj_type, (IUnknown **)&source);
+                        MF_RESOLUTION_MEDIASOURCE, props, &obj_type, (IUnknown **)&source);
                 break;
             case MF_OBJECT_MEDIASOURCE:
                 source = (IMFMediaSource *)object;
@@ -597,10 +643,12 @@ static HRESULT create_source_reader_from_url(const WCHAR *url, IMFAttributes *at
     }
 
     IMFSourceResolver_Release(resolver);
+    if (props)
+        IPropertyStore_Release(props);
     if (FAILED(hr))
         return hr;
 
-    hr = create_source_reader_from_source(source, attributes, riid, out);
+    hr = create_source_reader_from_source(source, attributes, TRUE, riid, out);
     IMFMediaSource_Release(source);
     return hr;
 }
@@ -807,9 +855,14 @@ HRESULT WINAPI MFCreateSourceReaderFromByteStream(IMFByteStream *stream, IMFAttr
 HRESULT WINAPI MFCreateSourceReaderFromMediaSource(IMFMediaSource *source, IMFAttributes *attributes,
                                                    IMFSourceReader **reader)
 {
+    UINT32 disconnect = 0;
+
     TRACE("%p, %p, %p.\n", source, attributes, reader);
 
-    return create_source_reader_from_source(source, attributes, &IID_IMFSourceReader, (void **)reader);
+    if (attributes)
+        IMFAttributes_GetUINT32(attributes, &MF_SOURCE_READER_DISCONNECT_MEDIASOURCE_ON_SHUTDOWN, &disconnect);
+
+    return create_source_reader_from_source(source, attributes, !disconnect, &IID_IMFSourceReader, (void **)reader);
 }
 
 /***********************************************************************
@@ -881,7 +934,13 @@ static HRESULT WINAPI readwrite_factory_CreateInstanceFromObject(IMFReadWriteCla
         if (stream)
             hr = create_source_reader_from_stream(stream, attributes, riid, out);
         else if (source)
-            hr = create_source_reader_from_source(source, attributes, riid, out);
+        {
+            UINT32 disconnect = 0;
+
+            if (attributes)
+                IMFAttributes_GetUINT32(attributes, &MF_SOURCE_READER_DISCONNECT_MEDIASOURCE_ON_SHUTDOWN, &disconnect);
+            hr = create_source_reader_from_source(source, attributes, !disconnect, riid, out);
+        }
 
         if (source)
             IMFMediaSource_Release(source);

@@ -207,6 +207,20 @@ static struct VkQueue_T *wine_vk_device_alloc_queues(struct VkDevice_T *device,
     return queues;
 }
 
+static void *convert_VkPhysicalDeviceFeatures2(const void *src)
+{
+    const VkPhysicalDeviceFeatures2 *in = src;
+    VkPhysicalDeviceFeatures2 *out;
+
+    if (!(out = heap_alloc(sizeof(*out))))
+        return NULL;
+
+    *out = *in;
+    out->pNext = NULL;
+
+    return out;
+}
+
 static void *convert_VkDeviceGroupDeviceCreateInfo(const void *src)
 {
     const VkDeviceGroupDeviceCreateInfo *in = src;
@@ -248,12 +262,15 @@ static void *convert_VkPhysicalDeviceHostQueryResetFeaturesEXT(const void *src)
 static void wine_vk_device_free_create_info(VkDeviceCreateInfo *create_info)
 {
     VkPhysicalDeviceHostQueryResetFeaturesEXT *host_query_reset_features;
+    VkPhysicalDeviceFeatures2 *device_features;
     VkDeviceGroupDeviceCreateInfo *group_info;
 
+    device_features = wine_vk_find_struct(create_info, PHYSICAL_DEVICE_FEATURES_2);
     group_info = wine_vk_find_struct(create_info, DEVICE_GROUP_DEVICE_CREATE_INFO);
     host_query_reset_features = wine_vk_find_struct(create_info, PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES_EXT);
     create_info->pNext = NULL;
 
+    heap_free(device_features);
     if (group_info)
     {
         heap_free((void *)group_info->pPhysicalDevices);
@@ -296,6 +313,12 @@ static VkResult wine_vk_device_convert_create_info(const VkDeviceCreateInfo *src
                     dst_header = dst_header->pNext;
                     break;
 
+                case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2:
+                    if (!(dst_header->pNext = convert_VkPhysicalDeviceFeatures2(header)))
+                        goto err;
+                    dst_header = dst_header->pNext;
+                    break;
+
                 case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES_EXT:
                     if (!(dst_header->pNext = convert_VkPhysicalDeviceHostQueryResetFeaturesEXT(header)))
                         goto err;
@@ -303,7 +326,7 @@ static VkResult wine_vk_device_convert_create_info(const VkDeviceCreateInfo *src
                     break;
 
                 default:
-                    FIXME("Application requested a linked structure of type %#x.\n", header->sType);
+                    FIXME("Application requested a linked structure of type %u.\n", header->sType);
             }
         }
     }
@@ -408,7 +431,7 @@ static VkResult wine_vk_instance_convert_create_info(const VkInstanceCreateInfo 
                     break;
 
                 default:
-                    FIXME("Application requested a linked structure of type %#x.\n", header->sType);
+                    FIXME("Application requested a linked structure of type %u.\n", header->sType);
             }
         }
     }
@@ -1028,7 +1051,7 @@ void WINAPI wine_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2 *in
     TRACE("%p, %p, %p\n", device, info, queue);
 
     if ((chain = info->pNext))
-        FIXME("Ignoring a linked structure of type %#x.\n", chain->sType);
+        FIXME("Ignoring a linked structure of type %u.\n", chain->sType);
 
     matching_queue = &device->queues[info->queueFamilyIndex][info->queueIndex];
     if (matching_queue->flags != info->flags)
@@ -1251,6 +1274,98 @@ VkResult WINAPI wine_vkEnumeratePhysicalDeviceGroupsKHR(VkInstance instance,
     TRACE("%p, %p, %p\n", instance, count, properties);
     return wine_vk_enumerate_physical_device_groups(instance,
             instance->funcs.p_vkEnumeratePhysicalDeviceGroupsKHR, count, properties);
+}
+
+void WINAPI wine_vkGetPhysicalDeviceExternalFenceProperties(VkPhysicalDevice phys_dev,
+        const VkPhysicalDeviceExternalFenceInfo *fence_info, VkExternalFenceProperties *properties)
+{
+    TRACE("%p, %p, %p\n", phys_dev, fence_info, properties);
+    properties->exportFromImportedHandleTypes = 0;
+    properties->compatibleHandleTypes = 0;
+    properties->externalFenceFeatures = 0;
+}
+
+void WINAPI wine_vkGetPhysicalDeviceExternalFencePropertiesKHR(VkPhysicalDevice phys_dev,
+        const VkPhysicalDeviceExternalFenceInfo *fence_info, VkExternalFenceProperties *properties)
+{
+    TRACE("%p, %p, %p\n", phys_dev, fence_info, properties);
+    properties->exportFromImportedHandleTypes = 0;
+    properties->compatibleHandleTypes = 0;
+    properties->externalFenceFeatures = 0;
+}
+
+void WINAPI wine_vkGetPhysicalDeviceExternalBufferProperties(VkPhysicalDevice phys_dev,
+        const VkPhysicalDeviceExternalBufferInfo *buffer_info, VkExternalBufferProperties *properties)
+{
+    TRACE("%p, %p, %p\n", phys_dev, buffer_info, properties);
+    memset(&properties->externalMemoryProperties, 0, sizeof(properties->externalMemoryProperties));
+}
+
+void WINAPI wine_vkGetPhysicalDeviceExternalBufferPropertiesKHR(VkPhysicalDevice phys_dev,
+        const VkPhysicalDeviceExternalBufferInfo *buffer_info, VkExternalBufferProperties *properties)
+{
+    TRACE("%p, %p, %p\n", phys_dev, buffer_info, properties);
+    memset(&properties->externalMemoryProperties, 0, sizeof(properties->externalMemoryProperties));
+}
+
+VkResult WINAPI wine_vkGetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice phys_dev,
+        const VkPhysicalDeviceImageFormatInfo2 *format_info, VkImageFormatProperties2 *properties)
+{
+    VkExternalImageFormatProperties *external_image_properties;
+    VkResult res;
+
+    TRACE("%p, %p, %p\n", phys_dev, format_info, properties);
+
+    res = thunk_vkGetPhysicalDeviceImageFormatProperties2(phys_dev, format_info, properties);
+
+    if ((external_image_properties = wine_vk_find_struct(properties, EXTERNAL_IMAGE_FORMAT_PROPERTIES)))
+    {
+        VkExternalMemoryProperties *p = &external_image_properties->externalMemoryProperties;
+        p->externalMemoryFeatures = 0;
+        p->exportFromImportedHandleTypes = 0;
+        p->compatibleHandleTypes = 0;
+    }
+
+    return res;
+}
+
+VkResult WINAPI wine_vkGetPhysicalDeviceImageFormatProperties2KHR(VkPhysicalDevice phys_dev,
+        const VkPhysicalDeviceImageFormatInfo2 *format_info, VkImageFormatProperties2 *properties)
+{
+    VkExternalImageFormatProperties *external_image_properties;
+    VkResult res;
+
+    TRACE("%p, %p, %p\n", phys_dev, format_info, properties);
+
+    res = thunk_vkGetPhysicalDeviceImageFormatProperties2KHR(phys_dev, format_info, properties);
+
+    if ((external_image_properties = wine_vk_find_struct(properties, EXTERNAL_IMAGE_FORMAT_PROPERTIES)))
+    {
+        VkExternalMemoryProperties *p = &external_image_properties->externalMemoryProperties;
+        p->externalMemoryFeatures = 0;
+        p->exportFromImportedHandleTypes = 0;
+        p->compatibleHandleTypes = 0;
+    }
+
+    return res;
+}
+
+void WINAPI wine_vkGetPhysicalDeviceExternalSemaphoreProperties(VkPhysicalDevice phys_dev,
+        const VkPhysicalDeviceExternalSemaphoreInfo *semaphore_info, VkExternalSemaphoreProperties *properties)
+{
+    TRACE("%p, %p, %p\n", phys_dev, semaphore_info, properties);
+    properties->exportFromImportedHandleTypes = 0;
+    properties->compatibleHandleTypes = 0;
+    properties->externalSemaphoreFeatures = 0;
+}
+
+void WINAPI wine_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR(VkPhysicalDevice phys_dev,
+        const VkPhysicalDeviceExternalSemaphoreInfo *semaphore_info, VkExternalSemaphoreProperties *properties)
+{
+    TRACE("%p, %p, %p\n", phys_dev, semaphore_info, properties);
+    properties->exportFromImportedHandleTypes = 0;
+    properties->compatibleHandleTypes = 0;
+    properties->externalSemaphoreFeatures = 0;
 }
 
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, void *reserved)

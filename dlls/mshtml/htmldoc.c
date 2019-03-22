@@ -213,12 +213,12 @@ static HRESULT WINAPI HTMLDocument_Invoke(IHTMLDocument2 *iface, DISPID dispIdMe
 static HRESULT WINAPI HTMLDocument_get_Script(IHTMLDocument2 *iface, IDispatch **p)
 {
     HTMLDocument *This = impl_from_IHTMLDocument2(iface);
+    HRESULT hres;
 
     TRACE("(%p)->(%p)\n", This, p);
 
-    *p = (IDispatch*)&This->window->base.IHTMLWindow2_iface;
-    IDispatch_AddRef(*p);
-    return S_OK;
+    hres = IHTMLDocument7_get_parentWindow(&This->IHTMLDocument7_iface, (IHTMLWindow2**)p);
+    return hres == S_OK && !*p ? E_PENDING : hres;
 }
 
 static HRESULT WINAPI HTMLDocument_get_all(IHTMLDocument2 *iface, IHTMLElementCollection **p)
@@ -1627,10 +1627,12 @@ static HRESULT WINAPI HTMLDocument_elementFromPoint(IHTMLDocument2 *iface, LONG 
 static HRESULT WINAPI HTMLDocument_get_parentWindow(IHTMLDocument2 *iface, IHTMLWindow2 **p)
 {
     HTMLDocument *This = impl_from_IHTMLDocument2(iface);
+    HRESULT hres;
 
     TRACE("(%p)->(%p)\n", This, p);
 
-    return IHTMLDocument7_get_defaultView(&This->IHTMLDocument7_iface, p);
+    hres = IHTMLDocument7_get_defaultView(&This->IHTMLDocument7_iface, p);
+    return hres == S_OK && !*p ? E_FAIL : hres;
 }
 
 static HRESULT WINAPI HTMLDocument_get_styleSheets(IHTMLDocument2 *iface,
@@ -3248,12 +3250,16 @@ static HRESULT WINAPI HTMLDocument7_Invoke(IHTMLDocument7 *iface, DISPID dispIdM
 
 static HRESULT WINAPI HTMLDocument7_get_defaultView(IHTMLDocument7 *iface, IHTMLWindow2 **p)
 {
-    HTMLDocument *This = impl_from_IHTMLDocument7(iface);
+    HTMLDocumentNode *This = impl_from_IHTMLDocument7(iface)->doc_node;
 
     TRACE("(%p)->(%p)\n", This, p);
 
-    *p = &This->window->base.IHTMLWindow2_iface;
-    IHTMLWindow2_AddRef(*p);
+    if(This->window && This->window->base.outer_window) {
+        *p = &This->window->base.outer_window->base.IHTMLWindow2_iface;
+        IHTMLWindow2_AddRef(*p);
+    }else {
+        *p = NULL;
+    }
     return S_OK;
 }
 
@@ -4905,7 +4911,8 @@ void detach_document_node(HTMLDocumentNode *doc)
     for(i=0; i < doc->elem_vars_cnt; i++)
         heap_free(doc->elem_vars[i]);
     heap_free(doc->elem_vars);
-    doc->elem_vars_cnt = 0;
+    doc->elem_vars_cnt = doc->elem_vars_size = 0;
+    doc->elem_vars = NULL;
 
     if(doc->catmgr) {
         ICatInformation_Release(doc->catmgr);
